@@ -1,0 +1,18 @@
+# Node / Next.js (frontend)
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+frontend/.env*
+!frontend/.env.example
+frontend/npm-debug.log*
+frontend/next-env.d.ts
+
+# Python / AWS SAM (backend)
+backend/.aws-sam/
+backend/**/__pycache__/
+backend/**/*.pyc
+backend/samconfig.toml
+
+# OS
+.DS_Store
+Thumbs.db

@@ -1,0 +1,77 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  ShelfScannerAI Phase 1 — Vision Pipeline
+  S3 (image storage) -> Lambda -> Rekognition DetectText -> Open Library enrichment
+
+Parameters:
+  Stage:
+    Type: String
+    Default: dev
+
+Globals:
+  Function:
+    Timeout: 30
+    MemorySize: 512
+    Runtime: python3.12
+
+Resources:
+  ShelfImagesBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub shelfscannerai-images-${Stage}
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireUploadsAfter7Days
+            Status: Enabled
+            ExpirationInDays: 7
+
+  UploadHandlerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub shelfscannerai-upload-handler-${Stage}
+      CodeUri: upload_handler/
+      Handler: app.lambda_handler
+      Environment:
+        Variables:
+          S3_BUCKET_NAME: !Ref ShelfImagesBucket
+      Policies:
+        - Statement:
+            - Sid: PutAndGetShelfImages
+              Effect: Allow
+              Action:
+                - s3:PutObject
+                - s3:GetObject
+              Resource: !Sub arn:aws:s3:::shelfscannerai-images-${Stage}/*
+            - Sid: RekognitionDetectText
+              Effect: Allow
+              Action:
+                - rekognition:DetectText
+              Resource: '*'
+      Events:
+        UploadApi:
+          Type: Api
+          Properties:
+            Path: /upload
+            Method: post
+            RestApiId: !Ref ShelfScannerApi
+
+  ShelfScannerApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      StageName: !Ref Stage
+      Cors:
+        AllowMethods: "'POST, OPTIONS'"
+        AllowHeaders: "'Content-Type'"
+        AllowOrigin: "'*'"
+
+Outputs:
+  ApiBaseUrl:
+    Description: Base URL for the ShelfScannerAI API (prod-style stage path)
+    Value: !Sub https://${ShelfScannerApi}.execute-api.${AWS::Region}.amazonaws.com/${Stage}
+  UploadEndpoint:
+    Description: POST endpoint for bookshelf image upload
+    Value: !Sub https://${ShelfScannerApi}.execute-api.${AWS::Region}.amazonaws.com/${Stage}/upload
+  ShelfImagesBucketName:
+    Description: S3 bucket storing uploaded bookshelf photos
+    Value: !Ref ShelfImagesBucket
