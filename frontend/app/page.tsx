@@ -8,12 +8,20 @@ export default function Home() {
         Photograph a bookshelf and get a personalized, explainable recommendation
         from your reading taste — no manual cataloging required.
       </p>
-      <Link
-        href="/scan"
-        className="rounded-full bg-black text-white px-6 py-3 font-medium"
-      >
-        Scan a Shelf
-      </Link>
+      <div className="flex gap-4">
+        <Link
+          href="/scan"
+          className="rounded-full bg-black text-white px-6 py-3 font-medium"
+        >
+          Scan a Shelf
+        </Link>
+        <Link
+          href="/profile"
+          className="rounded-full border px-6 py-3 font-medium text-zinc-700 dark:text-zinc-300"
+        >
+          Your Profile
+        </Link>
+      </div>
     </main>
   )
 }

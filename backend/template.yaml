@@ -1,8 +1,10 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
 Description: >
-  ShelfScannerAI Phase 1 — Vision Pipeline
-  S3 (image storage) -> Lambda -> Rekognition DetectText -> Open Library enrichment
+  ShelfScannerAI Phase 1 + 2 - Vision pipeline, user memory layer, and vector search.
+  S3 -> Lambda -> Rekognition DetectText -> Open Library enrichment (Phase 1).
+  DynamoDB (Users/Books/ReadingHistory) + Aurora Serverless v2 pgvector via RDS Data API,
+  Bedrock Claude (signal extraction) + Titan Embeddings (Phase 2).
 
 Parameters:
   Stage:
@@ -56,12 +58,279 @@ Resources:
             Method: post
             RestApiId: !Ref ShelfScannerApi
 
+  # ---------------------------------------------------------------------
+  # Phase 2 - DynamoDB user memory layer (schema: handoff.md section 6)
+  # ---------------------------------------------------------------------
+
+  UsersTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub shelfscannerai-users-${Stage}
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: userId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: userId
+          KeyType: HASH
+
+  BooksTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub shelfscannerai-books-${Stage}
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: bookId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: bookId
+          KeyType: HASH
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+
+  ReadingHistoryTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub shelfscannerai-reading-history-${Stage}
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: userId
+          AttributeType: S
+        - AttributeName: sk
+          AttributeType: S
+      KeySchema:
+        - AttributeName: userId
+          KeyType: HASH
+        - AttributeName: sk
+          KeyType: RANGE
+
+  # ---------------------------------------------------------------------
+  # Phase 2 - Aurora Serverless v2 (pgvector) reached only via RDS Data
+  # API. Lambdas never join this VPC; it exists solely so Aurora has a
+  # subnet group. See ShelfScannerAI_Handoff.md section 15 for the cost
+  # tradeoffs of this choice (CloudFormation floors MinCapacity at 0.5
+  # ACU - no scale-to-zero - so this runs ~$44/mo unless manually
+  # stopped between sessions via `aws rds stop-db-cluster`).
+  # ---------------------------------------------------------------------
+
+  AuroraVpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.42.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+
+  AuroraSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref AuroraVpc
+      CidrBlock: 10.42.1.0/24
+      AvailabilityZone: !Select [0, !GetAZs '']
+
+  AuroraSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref AuroraVpc
+      CidrBlock: 10.42.2.0/24
+      AvailabilityZone: !Select [1, !GetAZs '']
+
+  AuroraSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: Subnet group for Aurora Serverless v2 (Data API only - no VPC-attached Lambda)
+      SubnetIds:
+        - !Ref AuroraSubnetA
+        - !Ref AuroraSubnetB
+
+  AuroraSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Aurora cluster SG - no ingress rules needed, all access is via RDS Data API
+      VpcId: !Ref AuroraVpc
+      SecurityGroupIngress: []
+
+  AuroraCluster:
+    Type: AWS::RDS::DBCluster
+    Properties:
+      Engine: aurora-postgresql
+      EngineMode: provisioned
+      EngineVersion: '16.9'
+      DatabaseName: shelfscanner
+      MasterUsername: shelfscanner_admin
+      ManageMasterUserPassword: true
+      EnableHttpEndpoint: true
+      DBSubnetGroupName: !Ref AuroraSubnetGroup
+      VpcSecurityGroupIds:
+        - !Ref AuroraSecurityGroup
+      StorageEncrypted: true
+      BackupRetentionPeriod: 1
+      DeletionProtection: false
+      ServerlessV2ScalingConfiguration:
+        MinCapacity: 0.5
+        MaxCapacity: 1
+
+  AuroraInstance:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      Engine: aurora-postgresql
+      DBInstanceClass: db.serverless
+      DBClusterIdentifier: !Ref AuroraCluster
+      PubliclyAccessible: false
+
+  DbBootstrapFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub shelfscannerai-db-bootstrap-${Stage}
+      CodeUri: db_bootstrap/
+      Handler: app.lambda_handler
+      Timeout: 300
+      Environment:
+        Variables:
+          AURORA_CLUSTER_ARN: !GetAtt AuroraCluster.DBClusterArn
+          AURORA_SECRET_ARN: !GetAtt AuroraCluster.MasterUserSecret.SecretArn
+          AURORA_DATABASE_NAME: shelfscanner
+      Policies:
+        - Statement:
+            - Sid: DataApiBootstrap
+              Effect: Allow
+              Action:
+                - rds-data:ExecuteStatement
+                - rds-data:BatchExecuteStatement
+                - rds-data:BeginTransaction
+                - rds-data:CommitTransaction
+                - rds-data:RollbackTransaction
+              Resource: !GetAtt AuroraCluster.DBClusterArn
+            - Sid: DataApiSecret
+              Effect: Allow
+              Action: secretsmanager:GetSecretValue
+              Resource: !GetAtt AuroraCluster.MasterUserSecret.SecretArn
+
+  AuroraBootstrap:
+    Type: Custom::AuroraBootstrap
+    DependsOn: AuroraInstance
+    Properties:
+      ServiceToken: !GetAtt DbBootstrapFunction.Arn
+      ClusterArn: !GetAtt AuroraCluster.DBClusterArn
+
+  # ---------------------------------------------------------------------
+  # Phase 2 - API Lambdas
+  # ---------------------------------------------------------------------
+
+  UserProfileHandlerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub shelfscannerai-user-handler-${Stage}
+      CodeUri: user_handler/
+      Handler: app.lambda_handler
+      Environment:
+        Variables:
+          DYNAMODB_USERS_TABLE: !Ref UsersTable
+          DYNAMODB_HISTORY_TABLE: !Ref ReadingHistoryTable
+      Policies:
+        - Statement:
+            - Sid: UsersReadWrite
+              Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:PutItem
+              Resource: !GetAtt UsersTable.Arn
+            - Sid: HistoryQuery
+              Effect: Allow
+              Action: dynamodb:Query
+              Resource: !GetAtt ReadingHistoryTable.Arn
+      Events:
+        GetProfile:
+          Type: Api
+          Properties:
+            Path: /user/{userId}/profile
+            Method: get
+            RestApiId: !Ref ShelfScannerApi
+
+  FeedbackHandlerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub shelfscannerai-feedback-handler-${Stage}
+      CodeUri: feedback_handler/
+      Handler: app.lambda_handler
+      Timeout: 30
+      Environment:
+        Variables:
+          DYNAMODB_USERS_TABLE: !Ref UsersTable
+          DYNAMODB_BOOKS_TABLE: !Ref BooksTable
+          DYNAMODB_HISTORY_TABLE: !Ref ReadingHistoryTable
+          BEDROCK_CLAUDE_MODEL_ID: us.anthropic.claude-sonnet-4-6
+          BEDROCK_TITAN_EMBED_MODEL_ID: amazon.titan-embed-text-v2:0
+          BEDROCK_REGION: !Ref AWS::Region
+          AURORA_CLUSTER_ARN: !GetAtt AuroraCluster.DBClusterArn
+          AURORA_SECRET_ARN: !GetAtt AuroraCluster.MasterUserSecret.SecretArn
+          AURORA_DATABASE_NAME: shelfscanner
+      Policies:
+        - Statement:
+            - Sid: UsersReadWrite
+              Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:PutItem
+                - dynamodb:UpdateItem
+              Resource: !GetAtt UsersTable.Arn
+            - Sid: BooksReadWrite
+              Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:PutItem
+              Resource: !GetAtt BooksTable.Arn
+            - Sid: HistoryWrite
+              Effect: Allow
+              Action: dynamodb:PutItem
+              Resource: !GetAtt ReadingHistoryTable.Arn
+            - Sid: BedrockInvokeClaudeViaInferenceProfile
+              Effect: Allow
+              Action: bedrock:InvokeModel
+              Resource: !Sub arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/us.anthropic.claude-sonnet-4-6
+            - Sid: BedrockInvokeClaudeUnderlyingModel
+              # Cross-region inference profiles (the "us." prefix) can route the request to any
+              # of these backing regions, so the underlying foundation-model ARN needs this
+              # wildcard rather than a single !Ref AWS::Region - confirmed by testing a bare
+              # on-demand InvokeModel call against the model ID, which AWS now rejects in favor
+              # of the inference-profile ID above.
+              Effect: Allow
+              Action: bedrock:InvokeModel
+              Resource:
+                - arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-sonnet-4-6
+                - arn:aws:bedrock:us-east-2::foundation-model/anthropic.claude-sonnet-4-6
+                - arn:aws:bedrock:us-west-2::foundation-model/anthropic.claude-sonnet-4-6
+            - Sid: BedrockInvokeTitanEmbed
+              Effect: Allow
+              Action: bedrock:InvokeModel
+              Resource: !Sub arn:aws:bedrock:${AWS::Region}::foundation-model/amazon.titan-embed-text-v2:0
+            - Sid: DataApiUpsert
+              Effect: Allow
+              Action:
+                - rds-data:ExecuteStatement
+                - rds-data:BatchExecuteStatement
+                - rds-data:BeginTransaction
+                - rds-data:CommitTransaction
+                - rds-data:RollbackTransaction
+              Resource: !GetAtt AuroraCluster.DBClusterArn
+            - Sid: DataApiSecret
+              Effect: Allow
+              Action: secretsmanager:GetSecretValue
+              Resource: !GetAtt AuroraCluster.MasterUserSecret.SecretArn
+      Events:
+        PostFeedback:
+          Type: Api
+          Properties:
+            Path: /feedback
+            Method: post
+            RestApiId: !Ref ShelfScannerApi
+
   ShelfScannerApi:
     Type: AWS::Serverless::Api
     Properties:
       StageName: !Ref Stage
       Cors:
-        AllowMethods: "'POST, OPTIONS'"
+        AllowMethods: "'GET, POST, OPTIONS'"
         AllowHeaders: "'Content-Type'"
         AllowOrigin: "'*'"
 
@@ -72,6 +341,27 @@ Outputs:
   UploadEndpoint:
     Description: POST endpoint for bookshelf image upload
     Value: !Sub https://${ShelfScannerApi}.execute-api.${AWS::Region}.amazonaws.com/${Stage}/upload
+  UserProfileEndpoint:
+    Description: GET endpoint for a user's taste profile
+    Value: !Sub https://${ShelfScannerApi}.execute-api.${AWS::Region}.amazonaws.com/${Stage}/user/{userId}/profile
+  FeedbackEndpoint:
+    Description: POST endpoint for post-read feedback
+    Value: !Sub https://${ShelfScannerApi}.execute-api.${AWS::Region}.amazonaws.com/${Stage}/feedback
   ShelfImagesBucketName:
     Description: S3 bucket storing uploaded bookshelf photos
     Value: !Ref ShelfImagesBucket
+  UsersTableName:
+    Description: DynamoDB table storing user identity and taste profiles
+    Value: !Ref UsersTable
+  BooksTableName:
+    Description: DynamoDB table caching enriched book metadata
+    Value: !Ref BooksTable
+  ReadingHistoryTableName:
+    Description: DynamoDB table storing per-user reading history and feedback
+    Value: !Ref ReadingHistoryTable
+  AuroraClusterEndpoint:
+    Description: Aurora Serverless v2 cluster writer endpoint (for manual psql/debugging via a bastion - no VPC access from a laptop otherwise)
+    Value: !GetAtt AuroraCluster.Endpoint.Address
+  AuroraSecretArn:
+    Description: Secrets Manager ARN holding Aurora master credentials (used by the RDS Data API)
+    Value: !GetAtt AuroraCluster.MasterUserSecret.SecretArn

@@ -899,4 +899,73 @@ NEXT_PUBLIC_API_BASE_URL=https://{api-id}.execute-api.us-east-1.amazonaws.com/pr
 
 ---
 
+## 15. Addendum — Phase 2 Vector Layer (added September 2026)
+
+This section adds to Phase 2 without changing anything in sections 1–14. Everything above — DynamoDB tables, API design, Bedrock prompts, frontend structure, phase roadmap — remains as originally written.
+
+### 15.1 Why this was added
+
+The resume bullet for this project already claims a RAG architecture: Amazon Titan Embeddings, cosine similarity search across reading-history embeddings, and Amazon Bedrock (Claude) for explainable ranking, on top of pgvector on AWS RDS. This addendum makes that real rather than aspirational, folded into Phase 2's `POST /feedback` path. The actual cosine-similarity retrieval + ranking logic (querying `book_embeddings` before calling Bedrock to rank) is Phase 3 (`recommend-handler`) and is **not** built yet — this addendum only gets the storage layer and the embedding-on-feedback write path in place.
+
+### 15.2 New component: `book_embeddings` on Aurora Serverless v2 (pgvector)
+
+```sql
+CREATE EXTENSION IF NOT EXISTS vector;
+
+CREATE TABLE book_embeddings (
+    id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id       TEXT NOT NULL,
+    book_id       TEXT NOT NULL,
+    title         TEXT,
+    author        TEXT,
+    rating        INTEGER,
+    embedding     vector(1024),
+    embedded_at   TIMESTAMP,
+    UNIQUE (user_id, book_id)
+);
+```
+
+**Corrected from the originally-specified 1,536 dimensions** after live-testing against the real Bedrock API (2026-11-12): `amazon.titan-embed-text-v2:0` only accepts `dimensions` of 256, 512, or 1024 — 1536 is an OpenAI (`text-embedding-ada-002`) convention, not a Titan one, and the API rejects it. Both the SQL column and the `_embed_text` call in `feedback_handler/app.py` use 1024.
+
+The `UNIQUE (user_id, book_id)` constraint isn't in the originally-specified schema — it was added so `feedback_handler` can `INSERT ... ON CONFLICT (user_id, book_id) DO UPDATE ...` (re-reading the same book updates its embedding rather than duplicating rows).
+
+The RDS Data API has no native `vector` parameter type. Embeddings are passed as a string literal (`"[0.01,0.02,...]"`) and cast in SQL with `::vector` / `CAST(... AS vector)`.
+
+`CREATE EXTENSION` and `CREATE TABLE` can't be expressed declaratively in CloudFormation, so they run once via a `Custom::AuroraBootstrap` CloudFormation custom resource (`backend/db_bootstrap/app.py`) that calls the Data API directly at deploy time.
+
+### 15.3 Why Aurora Serverless v2 + RDS Data API (not plain RDS Postgres)
+
+Lambda can only reach an RDS/Aurora database over the network if it's VPC-attached, and a VPC-attached Lambda loses default internet access — breaking its calls to Bedrock, Rekognition, and Open Library (a public third-party API with no AWS VPC endpoint) unless a NAT Gateway is added (~$32–38/month fixed). The RDS Data API sidesteps this entirely: it's an HTTPS API in front of the database, so Lambda calls it like any other AWS API with no VPC networking of its own. Aurora Serverless v2 is the engine that supports the Data API with pgvector.
+
+**The real cost tradeoff (confirmed, not templated around):** Aurora Serverless v2 added true scale-to-zero (0 ACU) in Nov 2024, but AWS CloudFormation's `AWS::RDS::DBCluster` resource has never been updated to allow `MinCapacity: 0` — it's AWS CLI-only, a known, unresolved CloudFormation gap. Since this project deploys via SAM (CloudFormation), the cluster is floored at `MinCapacity: 0.5` ACU, which runs **~$43.80/month if left running continuously** — more than the NAT Gateway this design avoided. This is a conscious, accepted tradeoff: manage cost by running `aws rds stop-db-cluster` between work sessions. Note AWS auto-restarts a stopped cluster after 7 days regardless, so this is a recurring habit, not a one-time setting — and remember to `aws rds start-db-cluster` before testing `/feedback` or anything that hits the Data API, since Data API does not auto-start a fully-stopped cluster (only auto-resume one that's merely idle at low ACU).
+
+*Optional future improvement, not built:* an EventBridge Scheduler rule + a small Lambda calling `rds:StopDBCluster` on a nightly schedule, to remove the reliance on remembering to do this manually.
+
+### 15.4 Updated Lambda responsibilities
+
+`POST /feedback` (`backend/feedback_handler/app.py`) now, in addition to the Prompt 2 signal extraction described in section 8:
+1. Embeds `"{title} by {author}. Reader feedback: {feedbackText}"` via Titan Embeddings (`amazon.titan-embed-text-v2:0`, 1024 dimensions — see the correction note in 15.2).
+2. Upserts the resulting vector into `book_embeddings` via the RDS Data API.
+
+**Also corrected after live-testing (2026-11-12): the Claude model ID.** Section 5/8/11/14 above refer to `anthropic.claude-sonnet-4-6` as a bare model ID; as of this account's Bedrock access, on-demand `InvokeModel` against that bare ID is rejected — Bedrock now requires invoking Claude Sonnet 4.6 via a cross-region **inference profile** instead. `feedback_handler`'s `BEDROCK_CLAUDE_MODEL_ID` is set to `us.anthropic.claude-sonnet-4-6`, and its IAM policy grants `bedrock:InvokeModel` on both the inference-profile ARN and the underlying foundation-model ARN in each region the "us." profile can route to (`us-east-1`, `us-east-2`, `us-west-2`) — cross-region profiles require both per AWS's documented IAM pattern. Titan Embeddings has no such requirement; it's invoked directly by its foundation-model ID as originally planned.
+
+`GET /user/{userId}/profile` (`backend/user_handler/app.py`) is unchanged from the original Phase 2 spec in section 7 — no vector-layer involvement.
+
+A `bookId` continuity note: `upload_handler` (Phase 1) doesn't return a `bookId` today, since Open Library's `search.json` doesn't reliably surface ISBNs. `feedback_handler` accepts optional `title`/`author`/`genres` fallback fields in its request body and best-effort caches them into `Books` on a cache miss, so the `Books` cache starts filling in from feedback alone. Revisit if/when `upload_handler` starts writing real `bookId`s.
+
+`ReadingHistory`'s sort key is implemented as a plain attribute named `sk` holding the value `"{bookId}#{readAt}"` — a conventional attribute name, not a literal `#` character inside an attribute name, slightly reinterpreting section 6's `bookId#readAt (SK)` notation.
+
+### 15.5 Updated IAM
+
+In addition to the IAM list in the Pending Tasks Checklist (section 11):
+- `bedrock:InvokeModel` on `amazon.titan-embed-text-v2:0` (in addition to the existing Claude Sonnet model).
+- `rds-data:ExecuteStatement`, `rds-data:BatchExecuteStatement`, `rds-data:BeginTransaction`, `rds-data:CommitTransaction`, `rds-data:RollbackTransaction` on the Aurora cluster ARN.
+- `secretsmanager:GetSecretValue` on the Aurora cluster's RDS-managed master-user secret ARN (Data API authenticates via this secret, not IAM DB auth).
+
+### 15.6 What's ready for Phase 3, not built yet
+
+`book_embeddings` is schema-ready for `recommend-handler` to query via the pgvector `<=>` cosine-distance operator (`ORDER BY embedding <=> :query_embedding LIMIT N`) before passing top matches to Bedrock for ranking, per the original Phase 3 plan in section 10. That retrieval + ranking logic itself is not implemented as part of this addendum.
+
+---
+
 *Handoff prepared July 2026. All architecture decisions, schema, and prompts are ready for implementation. Start with Phase 1 — vision pipeline — and validate extraction accuracy before building the recommendation layer.*

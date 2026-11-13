@@ -3,18 +3,8 @@
 import { useEffect, useState } from 'react'
 import ImageUploader from '@/components/ImageUploader'
 import { uploadShelfImage } from '@/lib/api'
+import { getOrCreateUserId } from '@/lib/user'
 import type { UploadResponse } from '@/lib/types'
-
-const USER_ID_STORAGE_KEY = 'shelfscannerai_user_id'
-
-function getOrCreateUserId(): string {
-  let userId = localStorage.getItem(USER_ID_STORAGE_KEY)
-  if (!userId) {
-    userId = `user_${crypto.randomUUID().slice(0, 8)}`
-    localStorage.setItem(USER_ID_STORAGE_KEY, userId)
-  }
-  return userId
-}
 
 export default function ScanPage() {
   const [userId, setUserId] = useState<string | null>(null)
@@ -23,6 +13,8 @@ export default function ScanPage() {
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
+    // localStorage isn't available during SSR, so this id must be read client-side in an effect.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setUserId(getOrCreateUserId())
   }, [])
 
