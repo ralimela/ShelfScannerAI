@@ -1,10 +1,13 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
 Description: >
-  ShelfScannerAI Phase 1 + 2 - Vision pipeline, user memory layer, and vector search.
+  ShelfScannerAI Phase 1 + 2 + 3 - Vision pipeline, user memory layer, vector search,
+  and the recommendation engine.
   S3 -> Lambda -> Rekognition DetectText -> Open Library enrichment (Phase 1).
   DynamoDB (Users/Books/ReadingHistory) + Aurora Serverless v2 pgvector via RDS Data API,
   Bedrock Claude (signal extraction) + Titan Embeddings (Phase 2).
+  Scan-anchored recommendations against personal history, with a curated catalog
+  (catalog_embeddings) bootstrapping cold-start users via onboarding preferences (Phase 3).
 
 Parameters:
   Stage:
@@ -104,6 +107,18 @@ Resources:
           KeyType: HASH
         - AttributeName: sk
           KeyType: RANGE
+
+  ScanSessionsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub shelfscannerai-scan-sessions-${Stage}
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: sessionId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: sessionId
+          KeyType: HASH
 
   # ---------------------------------------------------------------------
   # Phase 2 - Aurora Serverless v2 (pgvector) reached only via RDS Data
@@ -212,6 +227,11 @@ Resources:
     Properties:
       ServiceToken: !GetAtt DbBootstrapFunction.Arn
       ClusterArn: !GetAtt AuroraCluster.DBClusterArn
+      # CloudFormation only re-invokes a custom resource when one of its own
+      # Properties changes - it does not track the backing Lambda's code. Bump
+      # this whenever BOOTSTRAP_SQL in db_bootstrap/app.py changes so the new
+      # SQL actually runs on the next deploy.
+      BootstrapSqlVersion: "3"
 
   # ---------------------------------------------------------------------
   # Phase 2 - API Lambdas
@@ -234,6 +254,7 @@ Resources:
               Action:
                 - dynamodb:GetItem
                 - dynamodb:PutItem
+                - dynamodb:UpdateItem
               Resource: !GetAtt UsersTable.Arn
             - Sid: HistoryQuery
               Effect: Allow
@@ -245,6 +266,12 @@ Resources:
           Properties:
             Path: /user/{userId}/profile
             Method: get
+            RestApiId: !Ref ShelfScannerApi
+        PostOnboarding:
+          Type: Api
+          Properties:
+            Path: /user/{userId}/onboarding
+            Method: post
             RestApiId: !Ref ShelfScannerApi
 
   FeedbackHandlerFunction:
@@ -325,6 +352,75 @@ Resources:
             Method: post
             RestApiId: !Ref ShelfScannerApi
 
+  # ---------------------------------------------------------------------
+  # Phase 3 - Recommendation engine
+  # ---------------------------------------------------------------------
+
+  RecommendHandlerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub shelfscannerai-recommend-handler-${Stage}
+      CodeUri: recommend_handler/
+      Handler: app.lambda_handler
+      Timeout: 30
+      Environment:
+        Variables:
+          DYNAMODB_USERS_TABLE: !Ref UsersTable
+          DYNAMODB_SCAN_SESSIONS_TABLE: !Ref ScanSessionsTable
+          BEDROCK_CLAUDE_MODEL_ID: us.anthropic.claude-sonnet-4-6
+          BEDROCK_TITAN_EMBED_MODEL_ID: amazon.titan-embed-text-v2:0
+          BEDROCK_REGION: !Ref AWS::Region
+          AURORA_CLUSTER_ARN: !GetAtt AuroraCluster.DBClusterArn
+          AURORA_SECRET_ARN: !GetAtt AuroraCluster.MasterUserSecret.SecretArn
+          AURORA_DATABASE_NAME: shelfscanner
+      Policies:
+        - Statement:
+            - Sid: UsersReadWrite
+              Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:PutItem
+              Resource: !GetAtt UsersTable.Arn
+            - Sid: ScanSessionsWrite
+              Effect: Allow
+              Action: dynamodb:PutItem
+              Resource: !GetAtt ScanSessionsTable.Arn
+            - Sid: BedrockInvokeClaudeViaInferenceProfile
+              Effect: Allow
+              Action: bedrock:InvokeModel
+              Resource: !Sub arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/us.anthropic.claude-sonnet-4-6
+            - Sid: BedrockInvokeClaudeUnderlyingModel
+              Effect: Allow
+              Action: bedrock:InvokeModel
+              Resource:
+                - arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-sonnet-4-6
+                - arn:aws:bedrock:us-east-2::foundation-model/anthropic.claude-sonnet-4-6
+                - arn:aws:bedrock:us-west-2::foundation-model/anthropic.claude-sonnet-4-6
+            - Sid: BedrockInvokeTitanEmbed
+              Effect: Allow
+              Action: bedrock:InvokeModel
+              Resource: !Sub arn:aws:bedrock:${AWS::Region}::foundation-model/amazon.titan-embed-text-v2:0
+            - Sid: DataApiQuery
+              Effect: Allow
+              Action:
+                - rds-data:ExecuteStatement
+                - rds-data:BatchExecuteStatement
+                - rds-data:BeginTransaction
+                - rds-data:CommitTransaction
+                - rds-data:RollbackTransaction
+              Resource: !GetAtt AuroraCluster.DBClusterArn
+            - Sid: DataApiSecret
+              Effect: Allow
+              Action: secretsmanager:GetSecretValue
+              Resource: !GetAtt AuroraCluster.MasterUserSecret.SecretArn
+      Events:
+        PostRecommend:
+          Type: Api
+          Properties:
+            Path: /recommend
+            Method: post
+            RestApiId: !Ref ShelfScannerApi
+
   ShelfScannerApi:
     Type: AWS::Serverless::Api
     Properties:
@@ -347,6 +443,15 @@ Outputs:
   FeedbackEndpoint:
     Description: POST endpoint for post-read feedback
     Value: !Sub https://${ShelfScannerApi}.execute-api.${AWS::Region}.amazonaws.com/${Stage}/feedback
+  RecommendEndpoint:
+    Description: POST endpoint for scan-anchored book recommendations
+    Value: !Sub https://${ShelfScannerApi}.execute-api.${AWS::Region}.amazonaws.com/${Stage}/recommend
+  OnboardingEndpoint:
+    Description: POST endpoint for initial taste-profile onboarding
+    Value: !Sub https://${ShelfScannerApi}.execute-api.${AWS::Region}.amazonaws.com/${Stage}/user/{userId}/onboarding
+  ScanSessionsTableName:
+    Description: DynamoDB table logging each scan + recommendation session
+    Value: !Ref ScanSessionsTable
   ShelfImagesBucketName:
     Description: S3 bucket storing uploaded bookshelf photos
     Value: !Ref ShelfImagesBucket
@@ -365,3 +470,6 @@ Outputs:
   AuroraSecretArn:
     Description: Secrets Manager ARN holding Aurora master credentials (used by the RDS Data API)
     Value: !GetAtt AuroraCluster.MasterUserSecret.SecretArn
+  AuroraClusterArn:
+    Description: Aurora Serverless v2 cluster ARN (needed by backend/scripts/ingest_catalog.py)
+    Value: !GetAtt AuroraCluster.DBClusterArn

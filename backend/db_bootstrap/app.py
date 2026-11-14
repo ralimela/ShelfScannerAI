@@ -26,6 +26,26 @@ BOOTSTRAP_SQL = [
         UNIQUE (user_id, book_id)
     );
     """,
+    # The RDS Data API's execute_statement does not support array-type
+    # parameters ("Array parameters are not supported") - subjects is stored
+    # as a JSON-encoded string instead of TEXT[]. The table was never
+    # populated under the old TEXT[] schema (ingestion failed before any
+    # insert succeeded), so a clean drop+recreate is safe here - never do
+    # this to book_embeddings, which holds real user data.
+    "DROP TABLE IF EXISTS catalog_embeddings;",
+    """
+    CREATE TABLE IF NOT EXISTS catalog_embeddings (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        work_key TEXT NOT NULL,
+        title TEXT NOT NULL,
+        author TEXT,
+        subjects TEXT,
+        description TEXT,
+        embedding vector(1024),
+        ingested_at TIMESTAMP,
+        UNIQUE (work_key)
+    );
+    """,
 ]
 
 

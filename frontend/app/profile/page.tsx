@@ -2,9 +2,21 @@
 
 import { useCallback, useEffect, useState } from 'react'
 import FeedbackForm from '@/components/FeedbackForm'
+import OnboardingForm from '@/components/OnboardingForm'
 import { getUserProfile } from '@/lib/api'
 import { getOrCreateUserId } from '@/lib/user'
 import type { UserProfileResponse } from '@/lib/types'
+
+function isNewUser(profile: UserProfileResponse): boolean {
+  const { tasteProfile, totalBooksRead } = profile
+  return (
+    totalBooksRead === 0 &&
+    tasteProfile.favoriteAuthors.length === 0 &&
+    tasteProfile.favoriteGenres.length === 0 &&
+    tasteProfile.writingStylePrefs.length === 0 &&
+    tasteProfile.avoidThemes.length === 0
+  )
+}
 
 function Pill({ label }: { label: string }) {
   return (
@@ -90,6 +102,10 @@ export default function ProfilePage() {
               </p>
             )}
           </div>
+
+          {userId && isNewUser(profile) && (
+            <OnboardingForm userId={userId} onSubmitted={() => loadProfile(userId)} />
+          )}
 
           {profile.recentBooks.length > 0 && (
             <div className="flex flex-col gap-2">

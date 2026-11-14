@@ -67,3 +67,57 @@ export interface FeedbackResponse {
     authorStyleRating: number | null
   }
 }
+
+export interface RecommendCandidate {
+  title: string
+  author: string | null
+  pageCount: number | null
+  genres: string[]
+}
+
+export interface RecommendRequest {
+  userId: string
+  sessionId?: string
+  candidates: RecommendCandidate[]
+  constraints?: { maxCompletionDays?: number; mood?: string }
+}
+
+export interface SimilarToMatch {
+  title: string
+  author: string | null
+  distance: number
+}
+
+export interface Recommendation {
+  rank: number
+  title: string
+  author: string | null
+  pageCount: number | null
+  reasoning: string
+  matchScore: number
+  matchedSignals: string[]
+  similarTo: SimilarToMatch | null
+}
+
+export interface RecommendResponse {
+  sessionId: string
+  mode: 'established' | 'cold_start'
+  recommendations: Recommendation[]
+  tasteProfileUsed: Partial<TasteProfile>
+  processingTimeMs: number
+}
+
+export interface OnboardingRequest {
+  favoriteAuthors?: string[]
+  favoriteGenres?: string[]
+  dislikedGenres?: string[]
+  writingStylePrefs?: string[]
+  avoidThemes?: string[]
+  preferredPacing?: string
+  preferredLength?: string
+}
+
+export interface OnboardingResponse {
+  userId: string
+  tasteProfile: TasteProfile
+}

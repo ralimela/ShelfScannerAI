@@ -2,15 +2,19 @@
 
 import { useEffect, useState } from 'react'
 import ImageUploader from '@/components/ImageUploader'
-import { uploadShelfImage } from '@/lib/api'
+import RecommendationList from '@/components/RecommendationList'
+import { getRecommendations, uploadShelfImage } from '@/lib/api'
 import { getOrCreateUserId } from '@/lib/user'
-import type { UploadResponse } from '@/lib/types'
+import type { RecommendResponse, UploadResponse } from '@/lib/types'
 
 export default function ScanPage() {
   const [userId, setUserId] = useState<string | null>(null)
   const [isUploading, setIsUploading] = useState(false)
   const [result, setResult] = useState<UploadResponse | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [isRecommending, setIsRecommending] = useState(false)
+  const [recommendations, setRecommendations] = useState<RecommendResponse | null>(null)
+  const [recommendError, setRecommendError] = useState<string | null>(null)
 
   useEffect(() => {
     // localStorage isn't available during SSR, so this id must be read client-side in an effect.
@@ -23,6 +27,8 @@ export default function ScanPage() {
     setIsUploading(true)
     setError(null)
     setResult(null)
+    setRecommendations(null)
+    setRecommendError(null)
     try {
       const response = await uploadShelfImage(userId, base64, contentType)
       setResult(response)
@@ -30,6 +36,30 @@ export default function ScanPage() {
       setError(err instanceof Error ? err.message : 'Upload failed')
     } finally {
       setIsUploading(false)
+    }
+  }
+
+  const handleGetRecommendations = async () => {
+    if (!userId || !result) return
+    setIsRecommending(true)
+    setRecommendError(null)
+    setRecommendations(null)
+    try {
+      const response = await getRecommendations({
+        userId,
+        sessionId: result.sessionId,
+        candidates: result.extractedTitles.map((title) => ({
+          title: title.title,
+          author: title.author,
+          pageCount: title.pageCount,
+          genres: title.genres,
+        })),
+      })
+      setRecommendations(response)
+    } catch (err) {
+      setRecommendError(err instanceof Error ? err.message : 'Getting recommendations failed')
+    } finally {
+      setIsRecommending(false)
     }
   }
 
@@ -60,6 +90,30 @@ export default function ScanPage() {
               </div>
             </div>
           ))}
+
+          {result.extractedTitles.length > 0 && !recommendations && (
+            <button
+              type="button"
+              onClick={handleGetRecommendations}
+              disabled={isRecommending}
+              className="rounded-full bg-black text-white py-2 font-medium disabled:opacity-50"
+            >
+              {isRecommending ? 'Finding your next read…' : 'Get Recommendations'}
+            </button>
+          )}
+
+          {recommendError && <p className="text-red-600 text-sm">{recommendError}</p>}
+        </div>
+      )}
+
+      {recommendations && (
+        <div className="w-full max-w-md flex flex-col gap-3">
+          <p className="text-sm text-gray-500">
+            {recommendations.mode === 'cold_start'
+              ? 'No reading history yet — matched against a curated catalog using your stated preferences.'
+              : 'Matched against your own reading history.'}
+          </p>
+          <RecommendationList recommendations={recommendations.recommendations} />
         </div>
       )}
     </main>

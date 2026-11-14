@@ -968,4 +968,90 @@ In addition to the IAM list in the Pending Tasks Checklist (section 11):
 
 ---
 
+## 16. Addendum — Phase 3 Recommendation Engine (added November 2026)
+
+This section adds to Phase 3 without changing anything in sections 1–15. Deployed and live-verified end-to-end on 2026-11-13, including the real bugs below that only surfaced against live AWS.
+
+### 16.1 Why this shape
+
+The core recommendation flow is scan-anchored, not a general browse: titles extracted from a bookshelf photo (`/upload`'s output) are the candidate pool, ranked against the reader's own taste signal. The twist beyond the original section 10 plan is cold-start handling — a brand-new user has no `book_embeddings` yet, so there's nothing to compare candidates against. Rather than fail or give generic advice, a new onboarding step captures stated preferences, and a curated ~450-book catalog (`catalog_embeddings`, populated by a one-time ingestion script) stands in for history until the user has read and rated books of their own. A user "graduates" from cold-start to established automatically the moment `feedback_handler` writes their first `book_embeddings` row — no special-case code needed, `/recommend` just checks `count(*) FROM book_embeddings WHERE user_id = ...` on every call.
+
+The catalog is deliberately small (445 books ingested from 9 Open Library subjects, not a bulk dump of thousands) — better embedding quality from real descriptions beats sprawling thin-metadata coverage, and no pgvector index was added on either `book_embeddings` or `catalog_embeddings` (a sequential scan at hundreds of rows is sub-millisecond; an approximate index would only reduce accuracy for no latency benefit at this scale).
+
+### 16.2 New component: `catalog_embeddings`
+
+```sql
+CREATE TABLE catalog_embeddings (
+    id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    work_key     TEXT NOT NULL,
+    title        TEXT NOT NULL,
+    author       TEXT,
+    subjects     TEXT,
+    description  TEXT,
+    embedding    vector(1024),
+    ingested_at  TIMESTAMP,
+    UNIQUE (work_key)
+);
+```
+
+**Corrected from the originally-planned `subjects TEXT[]`** after live-testing: the RDS Data API's `execute_statement` rejects array-type parameters outright (`ValidationException: Array parameters are not supported`) — this is a hard limitation of the Data API itself, not something fixable with different parameter formatting. `subjects` is stored as a JSON-encoded string instead; nothing queries or filters on it, so the richer `TEXT[]` type bought nothing in practice.
+
+Populated by `backend/scripts/ingest_catalog.py` — a standalone script (not a Lambda/custom resource; ~450 sequential books each needing an Open Library call + Titan embed + Data API insert risks Lambda's 15-minute cap and is painful to resume mid-failure as a CFN custom resource). Pulls from Open Library's bulk **subjects** endpoint (`openlibrary.org/subjects/{subject}.json`, distinct from the per-title `search.json` `upload_handler` uses), across `fiction`, `mystery_and_detective_stories`, `science_fiction`, `fantasy`, `romance`, `historical_fiction`, `horror`, `biography`, `young_adult_fiction` at 60 each. Safely re-runnable — it queries existing `work_key`s before spending any Bedrock call. Run manually:
+```
+AURORA_CLUSTER_ARN=... AURORA_SECRET_ARN=... AURORA_DATABASE_NAME=shelfscanner AWS_REGION=us-east-1 \
+python backend/scripts/ingest_catalog.py
+```
+(Aurora must be running first — `aws rds start-db-cluster` if stopped.)
+
+### 16.3 Real bugs found via live testing (none caught by `sam validate`/`sam build`/local testing)
+
+1. **CloudFormation custom resources don't re-run just because the backing Lambda's code changed.** `AuroraBootstrap` kept its old `Properties` (`ServiceToken`, `ClusterArn`) unchanged between the Phase 2 and Phase 3 deploys, so CloudFormation saw "nothing to update" and skipped re-invoking `db_bootstrap`'s new `catalog_embeddings` SQL entirely — the table didn't exist after the first Phase 3 deploy despite a clean `UPDATE_COMPLETE`. Fixed by adding a manually-bumped `BootstrapSqlVersion` property to the custom resource; **bump this every time `BOOTSTRAP_SQL` in `db_bootstrap/app.py` changes**, or the new SQL silently won't run.
+2. **RDS Data API's `execute_statement` does not support array parameters** (see 16.2) — breaks on the first `TEXT[]` insert, not at template-deploy time.
+3. **DynamoDB's boto3 resource API rejects native Python `float`** (`TypeError: Float types are not supported. Use Decimal types instead.`) — hit writing `matchScore`/`distance` values (sourced as Python floats from the Data API's `doubleValue` and from embedding-similarity math) into `ScanSessions`. Fixed with a small `_dynamo_safe()` helper in `recommend_handler/app.py` that round-trips a value through `json.dumps`/`json.loads(..., parse_float=Decimal)` to recursively convert any nested floats before a `put_item` call. Apply this to any future DynamoDB write that might carry a `float` anywhere in its structure, not just top-level.
+4. **Missing IAM permission**: the onboarding route added `dynamodb:UpdateItem` usage to `user_handler`, but `UserProfileHandlerFunction`'s policy only granted `GetItem`/`PutItem` — caught immediately by a live `AccessDeniedException`, not by any local check. Whenever a Lambda's code gains a new DynamoDB/AWS API call, grep the function body for the actions actually used and cross-check against its SAM `Policies` block before deploying, since nothing local catches a mismatch.
+5. **Windows console default encoding (`cp1252`) crashes on non-ASCII book titles.** `ingest_catalog.py` iterates over worldwide literature from Open Library and will hit titles with characters outside cp1252's range. Fixed with `sys.stdout.reconfigure(encoding="utf-8", errors="replace")` near the top of the script — needed for any script in this project that prints external, uncontrolled text on Windows.
+
+### 16.4 `/recommend` — request shape deviates from section 7
+
+The original spec in section 7 takes `titles: string[]`. The implementation instead takes `candidates: [{title, author, pageCount, genres}]` — exactly the shape `/upload` already returns. Re-deriving author/genres from a bare title string would mean a second, redundant Open Library round trip; reusing `/upload`'s already-enriched output is strictly better and keeps the two endpoints composable.
+
+```json
+POST /recommend
+{
+  "userId": "user_abc123",
+  "sessionId": "sess_xyz789",
+  "candidates": [{"title": "The Secret History", "author": "Donna Tartt", "pageCount": 559, "genres": ["literary fiction"]}],
+  "constraints": {"mood": "something atmospheric"}
+}
+```
+Response adds a top-level `"mode": "established" | "cold_start"` (which table/branch supplied the similarity signal) and a per-recommendation `"similarTo": {title, author, distance}` showing the specific nearest-neighbor match Claude's reasoning is grounded in. Claude's output is never trusted blind — recommendations are filtered to only titles that were actually in the request (case-insensitive match), and `similarTo` is re-attached server-side from the computed nearest-match data rather than trusting Claude to echo it back correctly.
+
+Cosine distance → `matchScore`: since Titan embeddings are generated with `normalize: True`, `pgvector`'s `<=>` operator returns `1 - cosine_similarity`, so `matchScore = max(0, 1 - distance)`.
+
+Live-timed latency (relevant since API Gateway has a hard 29s ceiling): 3 candidates ≈ 11s, 8 candidates ≈ 19s. N candidates means N sequential Titan-embed + Data-API round trips before Claude even runs, so latency scales with scan size — no candidate-count capping needed at the scales tested, but worth re-timing if scans regularly exceed ~10 books.
+
+### 16.5 Onboarding — `POST /user/{userId}/onboarding`
+
+Added as a second route on the existing `UserProfileHandlerFunction` (branching inside `lambda_handler` on `event.get("httpMethod")`), not a new Lambda — same table, same resource, avoids a 6th Lambda for one write path.
+
+```json
+POST /user/{userId}/onboarding
+{"favoriteAuthors": ["..."], "favoriteGenres": ["..."], "writingStylePrefs": ["..."], "avoidThemes": ["..."], "preferredPacing": "...", "preferredLength": "..."}
+```
+Overwrite semantics on the fields provided (not `feedback_handler`'s dedupe-append) — onboarding is an explicit form submission, not an inferred signal. Frontend gates this behind a simple check: show `OnboardingForm` on the profile page when `totalBooksRead === 0` and every taste-profile list field is empty.
+
+### 16.6 `ScanSessionsTable`
+
+PK `sessionId` only, no GSI on `userId` — nothing in the frontend queries "all scans by a user" yet (the profile page's recent-books list comes from `ReadingHistory`, not `ScanSessions`). Deferred, not built speculatively; add one if/when something actually needs that access pattern.
+
+### 16.7 Updated IAM
+
+`RecommendHandlerFunction` mirrors `FeedbackHandlerFunction`'s existing Bedrock/Data-API policy block exactly, plus `GetItem`/`PutItem` on `UsersTable` and `PutItem` on `ScanSessionsTable`. `UserProfileHandlerFunction` gained `dynamodb:UpdateItem` on `UsersTable` for the onboarding route (see 16.3.4).
+
+### 16.8 What's still deferred
+
+Phase 4 (reading pace tracking) — untouched. `upload_handler` still doesn't return stable `bookId`s for scanned titles — `/recommend` works around this by embedding title+author+genres directly rather than needing a `bookId` key, same workaround `feedback_handler` already uses. The frontend is not yet deployed publicly (Vercel/Amplify) — still local-only as of this addendum.
+
+---
+
 *Handoff prepared July 2026. All architecture decisions, schema, and prompts are ready for implementation. Start with Phase 1 — vision pipeline — and validate extraction accuracy before building the recommendation layer.*

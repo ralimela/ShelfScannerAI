@@ -15,8 +15,17 @@ history_table = dynamodb.Table(DYNAMODB_HISTORY_TABLE)
 CORS_HEADERS = {
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Headers": "Content-Type",
-    "Access-Control-Allow-Methods": "GET, OPTIONS",
+    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
 }
+
+ONBOARDING_LIST_FIELDS = (
+    "favoriteAuthors",
+    "favoriteGenres",
+    "dislikedGenres",
+    "writingStylePrefs",
+    "avoidThemes",
+)
+ONBOARDING_SCALAR_FIELDS = ("preferredPacing", "preferredLength")
 
 
 def _default_taste_profile():
@@ -79,17 +88,20 @@ def _recent_books(user_id, limit=10):
     return books
 
 
-def lambda_handler(event, context):
-    if event.get("httpMethod") == "OPTIONS":
-        return {"statusCode": 200, "headers": CORS_HEADERS, "body": ""}
+def _apply_onboarding(existing_profile, body):
+    profile = dict(existing_profile or _default_taste_profile())
+    for field in ONBOARDING_LIST_FIELDS:
+        if isinstance(body.get(field), list):
+            profile[field] = body[field]
+    for field in ONBOARDING_SCALAR_FIELDS:
+        if field in body:
+            profile[field] = body[field]
+    profile["lastUpdated"] = _now_iso()
+    return profile
 
-    path_params = event.get("pathParameters") or {}
-    user_id = path_params.get("userId")
-    if not user_id:
-        return _error(400, "userId is required")
 
+def _handle_get_profile(user_id):
     user = _get_or_create_user(user_id)
-
     return {
         "statusCode": 200,
         "headers": {**CORS_HEADERS, "Content-Type": "application/json"},
@@ -106,6 +118,43 @@ def lambda_handler(event, context):
             }
         ),
     }
+
+
+def _handle_post_onboarding(user_id, event):
+    try:
+        body = json.loads(event.get("body") or "{}")
+    except json.JSONDecodeError:
+        return _error(400, "Request body must be valid JSON")
+
+    user = _get_or_create_user(user_id)
+    updated_profile = _apply_onboarding(user.get("tasteProfile"), body)
+
+    users_table.update_item(
+        Key={"userId": user_id},
+        UpdateExpression="SET tasteProfile = :profile",
+        ExpressionAttributeValues={":profile": updated_profile},
+    )
+
+    return {
+        "statusCode": 200,
+        "headers": {**CORS_HEADERS, "Content-Type": "application/json"},
+        "body": json.dumps({"userId": user_id, "tasteProfile": updated_profile}),
+    }
+
+
+def lambda_handler(event, context):
+    if event.get("httpMethod") == "OPTIONS":
+        return {"statusCode": 200, "headers": CORS_HEADERS, "body": ""}
+
+    path_params = event.get("pathParameters") or {}
+    user_id = path_params.get("userId")
+    if not user_id:
+        return _error(400, "userId is required")
+
+    if event.get("httpMethod") == "POST":
+        return _handle_post_onboarding(user_id, event)
+
+    return _handle_get_profile(user_id)
 
 
 def _error(status_code, message):
