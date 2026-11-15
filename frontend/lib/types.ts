@@ -38,12 +38,38 @@ export interface RecentBook {
   readAt: string | null
 }
 
+export interface PaceSession {
+  bookId: string | null
+  title: string | null
+  author: string | null
+  startedAt: string
+  endedAt: string
+  pagesRead: number
+  pagesPerHour: number
+}
+
 export interface UserProfileResponse {
   userId: string
   tasteProfile: TasteProfile
   readingPace: ReadingPace
   totalBooksRead: number
   recentBooks: RecentBook[]
+  recentPaceSessions: PaceSession[]
+}
+
+export interface PaceLogRequest {
+  bookId?: string
+  title?: string
+  author?: string
+  startedAt: string
+  endedAt: string
+  pagesRead: number
+}
+
+export interface PaceLogResponse {
+  userId: string
+  session: PaceSession & { durationMinutes: number; createdAt: string }
+  readingPace: ReadingPace
 }
 
 export interface FeedbackRequest {
@@ -98,6 +124,7 @@ export interface Recommendation {
   matchScore: number
   matchedSignals: string[]
   similarTo: SimilarToMatch | null
+  estimatedHours: number | null
 }
 
 export interface RecommendResponse {

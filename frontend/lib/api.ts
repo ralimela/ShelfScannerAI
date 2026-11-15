@@ -3,6 +3,8 @@ import type {
   FeedbackResponse,
   OnboardingRequest,
   OnboardingResponse,
+  PaceLogRequest,
+  PaceLogResponse,
   RecommendRequest,
   RecommendResponse,
   UploadResponse,
@@ -82,6 +84,28 @@ export async function getRecommendations(payload: RecommendRequest): Promise<Rec
   if (!res.ok) {
     const body = await res.json().catch(() => ({}))
     throw new Error(body.error || `Getting recommendations failed with status ${res.status}`)
+  }
+
+  return res.json()
+}
+
+export async function logPaceSession(
+  userId: string,
+  payload: PaceLogRequest
+): Promise<PaceLogResponse> {
+  if (!API_BASE_URL) {
+    throw new Error('NEXT_PUBLIC_API_BASE_URL is not configured')
+  }
+
+  const res = await fetch(`${API_BASE_URL}/user/${userId}/pace-log`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}))
+    throw new Error(body.error || `Logging pace session failed with status ${res.status}`)
   }
 
   return res.json()

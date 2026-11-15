@@ -1100,6 +1100,46 @@ Rather than continue to speculate about the 3 remaining misses from 17.3, tempor
 - **The same-author-reuse instruction did not flip the two hardest cases** ("Krsna", "A Knight of the Seven Kingdoms") in live testing. Both remain genuinely ambiguous judgment calls for a text-only consolidation step (a bare single word with no cleanly-attached author nearby; a title fragmented into too many disjoint pieces to confidently reassemble). Pushing the prompt further to accept more ambiguous bare words as titles was deliberately not attempted — that trades back toward the original bug this whole fix exists to prevent (treating stray fragments as real titles).
 - **Live result after both prompt changes is 14-15 of 16 (not a fixed number)** — re-running the identical photo twice in a row produced 15 titles once and 14 the next time, with the *Storm of Swords* volume-split specifically landing differently each run (sometimes both volumes, sometimes only one). This is normal LLM sampling variance on the hardest disambiguation case, not a regression — removing the temporary diagnostic logging between runs had no effect on this. **Exact determinism is not achievable with this architecture**; 14-15/16 live (87-94%) with zero false positives either way is the realistic, accepted outcome of the text-only consolidation approach, up from the original ~18% precision this section started with.
 
+## 18. Addendum — Phase 4: Reading Pace Tracking + UI Redesign (added November 2026)
+
+### 18.1 Reading pace tracking
+
+New `pace_handler/app.py` Lambda, `POST /user/{userId}/pace-log`, backed by a new `PaceSessionsTable` (`userId` HASH, `sessionId` RANGE where `sessionId = f"{startedAt}#{uuid4().hex[:8]}"` so lexicographic sort order doubles as chronological order). A session body is `{ bookId?, title?, author?, startedAt, endedAt, pagesRead }`; the handler computes `pagesPerHour`, writes the session, and recomputes a **rolling average over the most recent 20 sessions** (not a lifetime average) into `UsersTable.readingPace` via a nested-path `UpdateExpression`.
+
+`recommend_handler/app.py` reads `readingPace` off the user record (already fetched for the taste profile — no new IAM policy needed) and precomputes `estimatedHours = pageCount / avgPagesPerHour` **in Python, not via the LLM** — Claude is told to reference the precomputed value in its reasoning and explicitly instructed never to invent its own number when it's `null` (no pace data yet). This was deliberate: trusting an LLM to do the division itself risks silently wrong arithmetic that looks confident in the response.
+
+**Bug hit and fixed during live verification:** the first deploy threw `TypeError: Object of type Decimal is not JSON serializable` inside `build_recommendation_prompt`'s `json.dumps` call. Cause: DynamoDB's boto3 resource API returns numeric attributes as `Decimal`, and `readingPace.avgPagesPerHour` (read straight off the user record) flowed untouched into both the prompt string and the per-candidate `estimatedHours` field. Fixed by casting to `float`/`int` immediately after reading `readingPace` off the user record, before it touches anything that gets JSON-serialized — the same class of bug `user_handler.py`'s `_handle_get_profile` already guards against for its own response, just missed on this new read path.
+
+`user_handler/app.py`'s `GET /user/{userId}/profile` now also returns `recentPaceSessions` (last 10, same `Query`/`ScanIndexForward=False` idiom as `_recent_books`) — needed a new `DYNAMODB_PACE_SESSIONS_TABLE` env var and a `dynamodb:Query` policy statement added to `UserProfileHandlerFunction`.
+
+**Live-verified** (`pace_test_user_01`, cleaned up after): two sessions (40 pages/60min, 30 pages/30min → 40 and 60 pages/hour) produced a rolling average of exactly 50 pages/hour; a subsequent `/recommend` call against that user returned `estimatedHours: 8.2` for a 412-page book and `6.2` for a 310-page book (both `pageCount / 50`, rounded), with Claude's reasoning text naturally citing "at your reading pace of 50 pages per hour, you'd finish this in roughly 6.2 hours."
+
+### 18.2 Frontend redesign
+
+The entire frontend was still the unmodified `create-next-app` Tailwind 4 starter: `globals.css` defined only `background`/`foreground`, `layout.tsx` had no shared header/nav, and every component hand-repeated the same utility strings (`border rounded-xl p-4`, `rounded-full bg-black text-white`). Also found and fixed a latent bug: `body`'s hardcoded `font-family: Arial, Helvetica, sans-serif` in `globals.css` was silently overriding the Geist font variables set on `<html>`, so Geist was loaded but never actually rendered.
+
+Added a proper `@theme inline` color/radius token set (brand/surface/border/muted-foreground/accent/danger, each redefined under `@media (prefers-color-scheme: dark)` with a warm, non-pure-black dark palette rather than the starter's `#0a0a0a`), a shared `Header` with nav rendered once in the root layout, and shared primitives under `components/ui/` (`Button`, `Card`, `Input`/`Textarea`, `Pill`) that every page/component now builds from instead of hand-copying Tailwind strings. Added `lucide-react` for icons (header wordmark, landing-page feature grid, `FeedbackForm`'s star rating). Rebuilt the landing page (`app/page.tsx`) from a title + one paragraph into a hero + 3-card feature grid. Added `PaceTimer.tsx` (start/stop session timer + pages-read input, logs via the new `/pace-log` endpoint) to the profile page, plus a plain-Tailwind-divs bar chart of `recentPaceSessions` pagesPerHour (single-series magnitude chart — no charting library needed at this scale, per the project's `dataviz` skill guidance: one brand-colored hue, title names the series instead of a legend).
+
+**Known limitation:** no browser-automation tool was available in this session, so the redesign was verified by `npm run lint`/`npm run build` (both clean) and by curling the dev server's rendered HTML for structural checks (header/nav present on all three routes, landing-page hero/feature copy present, `bg-brand` classes present). Content that only appears after client-side data fetch (e.g. the `PaceTimer`/pace chart on `/profile`, which render inside `{profile && (...)}` after `getUserProfile` resolves) could not be verified this way — only the pre-hydration SSR shell was inspectable via curl. A human visual pass in an actual browser is still recommended before considering the redesign fully verified.
+
+### 18.3 Public frontend deployment
+
+Deployed to **AWS Amplify Hosting** rather than Vercel: Vercel's CLI needs an interactive browser login this non-interactive session couldn't complete, while Amplify Hosting worked entirely from the AWS credentials already configured for the rest of this project. Live at `https://main.d3e1l3syrof2p7.amplifyapp.com` (app id `d3e1l3syrof2p7`).
+
+All three app routes already prerender as fully static HTML — confirmed from the build output (`○ (Static)`), since every page is `'use client'` with data fetched client-side rather than via server components. This meant `next.config.ts` only needed `output: "export"` added, turning the deploy into a plain static-file upload instead of requiring Amplify's SSR compute hosting. `NEXT_PUBLIC_API_BASE_URL` (the live dev API Gateway stage) gets baked into the static JS bundle at build time — correct for now since there's only one backend environment, but a future prod backend stage would need a separate frontend build/deploy pointed at it, not just a backend change.
+
+**Deploy is a manual zip upload, no git/CI linkage**:
+```
+cd frontend && npm run build          # -> out/ (static export)
+cd out && zip -r -q ../site.zip . && cd ..
+aws amplify create-deployment --app-id d3e1l3syrof2p7 --branch-name main   # -> jobId + presigned zipUploadUrl
+curl -T site.zip "<zipUploadUrl>"
+aws amplify start-deployment --app-id d3e1l3syrof2p7 --branch-name main --job-id <jobId>
+aws amplify get-job --app-id d3e1l3syrof2p7 --branch-name main --job-id <jobId>   # poll until SUCCEED
+```
+
+**Bug hit live:** redirecting `aws amplify create-deployment --output json 2>&1 > /tmp/file.json` in Windows Git Bash silently failed to write the file at all (no error, file just didn't exist) — write AWS CLI JSON output to the session's own scratchpad directory instead of `/tmp` on this setup. The practical consequence: two `create-deployment` calls succeeded against AWS but their presigned URLs were never captured, leaving two jobs stuck in `PENDING` with no zip ever uploaded. `aws amplify create-deployment` refuses to start a new deployment while a previous job is unfinished (`BadRequestException`), fixed by `aws amplify stop-job --job-id <n>` on each stuck job before retrying.
+
 ---
 
 *Handoff prepared July 2026. All architecture decisions, schema, and prompts are ready for implementation. Start with Phase 1 — vision pipeline — and validate extraction accuracy before building the recommendation layer.*

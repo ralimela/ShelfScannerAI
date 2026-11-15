@@ -7,10 +7,12 @@ import boto3
 AWS_REGION = os.environ.get("AWS_REGION", "us-east-1")
 DYNAMODB_USERS_TABLE = os.environ["DYNAMODB_USERS_TABLE"]
 DYNAMODB_HISTORY_TABLE = os.environ["DYNAMODB_HISTORY_TABLE"]
+DYNAMODB_PACE_SESSIONS_TABLE = os.environ["DYNAMODB_PACE_SESSIONS_TABLE"]
 
 dynamodb = boto3.resource("dynamodb", region_name=AWS_REGION)
 users_table = dynamodb.Table(DYNAMODB_USERS_TABLE)
 history_table = dynamodb.Table(DYNAMODB_HISTORY_TABLE)
+pace_sessions_table = dynamodb.Table(DYNAMODB_PACE_SESSIONS_TABLE)
 
 CORS_HEADERS = {
     "Access-Control-Allow-Origin": "*",
@@ -88,6 +90,28 @@ def _recent_books(user_id, limit=10):
     return books
 
 
+def _recent_pace_sessions(user_id, limit=10):
+    response = pace_sessions_table.query(
+        KeyConditionExpression=boto3.dynamodb.conditions.Key("userId").eq(user_id),
+        ScanIndexForward=False,
+        Limit=limit,
+    )
+    sessions = []
+    for entry in response.get("Items", []):
+        sessions.append(
+            {
+                "bookId": entry.get("bookId"),
+                "title": entry.get("title"),
+                "author": entry.get("author"),
+                "startedAt": entry.get("startedAt"),
+                "endedAt": entry.get("endedAt"),
+                "pagesRead": int(entry.get("pagesRead", 0)),
+                "pagesPerHour": float(entry.get("pagesPerHour", 0)),
+            }
+        )
+    return sessions
+
+
 def _apply_onboarding(existing_profile, body):
     profile = dict(existing_profile or _default_taste_profile())
     for field in ONBOARDING_LIST_FIELDS:
@@ -115,6 +139,7 @@ def _handle_get_profile(user_id):
                 },
                 "totalBooksRead": int(user.get("totalBooksRead", 0)),
                 "recentBooks": _recent_books(user_id),
+                "recentPaceSessions": _recent_pace_sessions(user_id),
             }
         ),
     }

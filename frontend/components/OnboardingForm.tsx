@@ -2,6 +2,9 @@
 
 import { useState } from 'react'
 import { submitOnboarding } from '@/lib/api'
+import Button from '@/components/ui/Button'
+import Card from '@/components/ui/Card'
+import Input from '@/components/ui/Input'
 import type { OnboardingResponse } from '@/lib/types'
 
 interface OnboardingFormProps {
@@ -19,6 +22,7 @@ function splitList(value: string): string[] {
 export default function OnboardingForm({ userId, onSubmitted }: OnboardingFormProps) {
   const [favoriteAuthors, setFavoriteAuthors] = useState('')
   const [favoriteGenres, setFavoriteGenres] = useState('')
+  const [dislikedGenres, setDislikedGenres] = useState('')
   const [writingStylePrefs, setWritingStylePrefs] = useState('')
   const [avoidThemes, setAvoidThemes] = useState('')
   const [isSubmitting, setIsSubmitting] = useState(false)
@@ -33,6 +37,7 @@ export default function OnboardingForm({ userId, onSubmitted }: OnboardingFormPr
       const response = await submitOnboarding(userId, {
         favoriteAuthors: splitList(favoriteAuthors),
         favoriteGenres: splitList(favoriteGenres),
+        dislikedGenres: splitList(dislikedGenres),
         writingStylePrefs: splitList(writingStylePrefs),
         avoidThemes: splitList(avoidThemes),
       })
@@ -46,51 +51,51 @@ export default function OnboardingForm({ userId, onSubmitted }: OnboardingFormPr
   }
 
   return (
-    <form onSubmit={handleSubmit} className="w-full max-w-md flex flex-col gap-3 border rounded-xl p-4">
-      <h2 className="font-medium">Tell Us What You Like</h2>
-      <p className="text-xs text-gray-500">
-        No reading history yet — share a few preferences so recommendations have something to work with.
-      </p>
+    <Card className="w-full max-w-md">
+      <form onSubmit={handleSubmit} className="flex flex-col gap-3">
+        <h2 className="font-medium">Tell Us What You Like</h2>
+        <p className="text-xs text-muted-foreground">
+          No reading history yet — share a few preferences so recommendations have something to work with.
+        </p>
 
-      <input
-        type="text"
-        placeholder="Favorite authors (comma separated)"
-        value={favoriteAuthors}
-        onChange={(e) => setFavoriteAuthors(e.target.value)}
-        className="border rounded-lg px-3 py-2 text-sm"
-      />
-      <input
-        type="text"
-        placeholder="Favorite genres (comma separated)"
-        value={favoriteGenres}
-        onChange={(e) => setFavoriteGenres(e.target.value)}
-        className="border rounded-lg px-3 py-2 text-sm"
-      />
-      <input
-        type="text"
-        placeholder="Writing styles you enjoy (e.g. atmospheric, fast-paced)"
-        value={writingStylePrefs}
-        onChange={(e) => setWritingStylePrefs(e.target.value)}
-        className="border rounded-lg px-3 py-2 text-sm"
-      />
-      <input
-        type="text"
-        placeholder="Themes to avoid"
-        value={avoidThemes}
-        onChange={(e) => setAvoidThemes(e.target.value)}
-        className="border rounded-lg px-3 py-2 text-sm"
-      />
+        <Input
+          type="text"
+          placeholder="Favorite authors (comma separated)"
+          value={favoriteAuthors}
+          onChange={(e) => setFavoriteAuthors(e.target.value)}
+        />
+        <Input
+          type="text"
+          placeholder="Favorite genres (comma separated)"
+          value={favoriteGenres}
+          onChange={(e) => setFavoriteGenres(e.target.value)}
+        />
+        <Input
+          type="text"
+          placeholder="Genres you dislike (comma separated)"
+          value={dislikedGenres}
+          onChange={(e) => setDislikedGenres(e.target.value)}
+        />
+        <Input
+          type="text"
+          placeholder="Writing styles you enjoy (e.g. atmospheric, fast-paced)"
+          value={writingStylePrefs}
+          onChange={(e) => setWritingStylePrefs(e.target.value)}
+        />
+        <Input
+          type="text"
+          placeholder="Themes to avoid"
+          value={avoidThemes}
+          onChange={(e) => setAvoidThemes(e.target.value)}
+        />
 
-      <button
-        type="submit"
-        disabled={isSubmitting}
-        className="rounded-full bg-black text-white py-2 font-medium disabled:opacity-50"
-      >
-        {isSubmitting ? 'Saving…' : 'Save Preferences'}
-      </button>
+        <Button type="submit" disabled={isSubmitting}>
+          {isSubmitting ? 'Saving…' : 'Save Preferences'}
+        </Button>
 
-      {error && <p className="text-red-600 text-sm">{error}</p>}
-      {submitted && <p className="text-sm text-gray-600 dark:text-zinc-400">Preferences saved.</p>}
-    </form>
+        {error && <p className="text-danger text-sm">{error}</p>}
+        {submitted && <p className="text-sm text-muted-foreground">Preferences saved.</p>}
+      </form>
+    </Card>
   )
 }

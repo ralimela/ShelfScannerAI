@@ -55,6 +55,7 @@ RULES:
 - Factor in any mood/constraints provided
 - Rank by match quality, not popularity
 - Only recommend books that appear in the AVAILABLE BOOKS list - never invent a title
+- Mention estimated completion time when a candidate's estimatedHours is provided
 - Return valid JSON only - no preamble, no markdown
 
 OUTPUT FORMAT:
@@ -72,7 +73,7 @@ OUTPUT FORMAT:
 """
 
 
-def build_recommendation_prompt(candidates_with_signals, taste_profile, mode, constraints, exploration_mode):
+def build_recommendation_prompt(candidates_with_signals, taste_profile, mode, constraints, exploration_mode, reading_pace):
     history_label = "own reading history" if mode == "established" else "stated preferences, via a curated catalog standing in for history"
     return f"""
 AVAILABLE BOOKS (extracted from bookshelf photo), each with a similarity signal
@@ -81,6 +82,13 @@ from the reader's {history_label}:
 
 USER TASTE PROFILE:
 {json.dumps(taste_profile, indent=2)}
+
+READER'S PACE:
+{json.dumps(reading_pace)}
+Each available book's "estimatedHours" (when not null) is pageCount / this reader's
+average pages-per-hour. Mention expected completion time when it's notably fast or
+slow for this reader. If estimatedHours is null, there isn't enough pace data yet -
+don't invent a number.
 
 CONSTRAINTS:
 {json.dumps(constraints or {}, indent=2)}
@@ -323,6 +331,12 @@ def lambda_handler(event, context):
 
     user = _get_or_create_user(user_id)
     taste_profile = user.get("tasteProfile", _default_taste_profile())
+    raw_reading_pace = user.get("readingPace") or {"avgPagesPerHour": 0, "totalSessions": 0}
+    avg_pages_per_hour = float(raw_reading_pace.get("avgPagesPerHour") or 0)
+    reading_pace = {
+        "avgPagesPerHour": avg_pages_per_hour,
+        "totalSessions": int(raw_reading_pace.get("totalSessions") or 0),
+    }
 
     established = _count_user_embeddings(user_id) > 0
     mode = "established" if established else "cold_start"
@@ -384,13 +398,17 @@ def lambda_handler(event, context):
         )
         matches_by_title[title.lower()] = matches
 
+        page_count = candidate.get("pageCount")
+        estimated_hours = round(page_count / avg_pages_per_hour, 1) if page_count and avg_pages_per_hour else None
+
         candidates_with_signals.append(
             {
                 "title": title,
                 "author": author,
-                "pageCount": candidate.get("pageCount"),
+                "pageCount": page_count,
                 "genres": genres,
                 "nearestMatches": matches,
+                "estimatedHours": estimated_hours,
             }
         )
 
@@ -402,7 +420,7 @@ def lambda_handler(event, context):
 
     candidates_with_signals.sort(key=_sort_key, reverse=(exploration_mode == "novelty"))
 
-    prompt = build_recommendation_prompt(candidates_with_signals, taste_profile, mode, constraints, exploration_mode)
+    prompt = build_recommendation_prompt(candidates_with_signals, taste_profile, mode, constraints, exploration_mode, reading_pace)
     claude_output = _invoke_claude(RECOMMENDATION_SYSTEM_PROMPT, prompt)
 
     candidates_by_title = {c["title"].lower(): c for c in candidates_with_signals}
@@ -426,6 +444,7 @@ def lambda_handler(event, context):
                 "matchScore": match_score,
                 "matchedSignals": rec.get("matchedSignals", []),
                 "similarTo": similar_to,
+                "estimatedHours": candidate.get("estimatedHours"),
             }
         )
 

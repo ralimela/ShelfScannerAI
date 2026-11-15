@@ -3,6 +3,9 @@
 import { useEffect, useState } from 'react'
 import ImageUploader from '@/components/ImageUploader'
 import RecommendationList from '@/components/RecommendationList'
+import Button from '@/components/ui/Button'
+import Card from '@/components/ui/Card'
+import Pill from '@/components/ui/Pill'
 import { getRecommendations, uploadShelfImage } from '@/lib/api'
 import { getOrCreateUserId } from '@/lib/user'
 import type { RecommendResponse, UploadResponse } from '@/lib/types'
@@ -66,78 +69,67 @@ export default function ScanPage() {
   }
 
   return (
-    <main className="min-h-screen flex flex-col items-center gap-8 p-8">
+    <main className="flex flex-col items-center gap-8 px-6 py-10 flex-1">
       <h1 className="text-2xl font-semibold">Scan a Bookshelf</h1>
 
       <ImageUploader onUpload={handleUpload} isUploading={isUploading} />
 
-      {error && <p className="text-red-600">{error}</p>}
+      {error && <p className="text-danger">{error}</p>}
 
       {result && (
         <div className="w-full max-w-md flex flex-col gap-3">
-          <p className="text-sm text-gray-500">
+          <p className="text-sm text-muted-foreground">
             {result.extractedTitles.length} title(s) found in {result.processingTimeMs}ms
           </p>
 
-          {result.message && <p className="text-sm text-gray-600">{result.message}</p>}
+          {result.message && <p className="text-sm text-muted-foreground">{result.message}</p>}
 
           {result.extractedTitles.map((title, i) => (
-            <div key={i} className="border rounded-xl p-4">
+            <Card key={i}>
               <p className="font-medium">{title.title}</p>
-              {title.author && <p className="text-sm text-gray-600">{title.author}</p>}
-              <div className="flex gap-3 text-xs text-gray-400 mt-1">
-                {title.pageCount && <span>{title.pageCount} pages</span>}
-                <span>{Math.round(title.confidence * 100)}% confidence</span>
-                {!title.matched && <span>no Open Library match</span>}
+              {title.author && <p className="text-sm text-muted-foreground">{title.author}</p>}
+              <div className="flex gap-2 text-xs text-muted-foreground mt-1 flex-wrap">
+                {title.pageCount && <Pill>{title.pageCount} pages</Pill>}
+                <Pill>{Math.round(title.confidence * 100)}% confidence</Pill>
+                {!title.matched && <Pill>no Open Library match</Pill>}
               </div>
-            </div>
+            </Card>
           ))}
 
           {result.extractedTitles.length > 0 && !recommendations && (
             <div className="flex flex-col gap-2">
               <div className="flex gap-2">
-                <button
+                <Button
                   type="button"
+                  variant={explorationMode === 'preference' ? 'primary' : 'outline'}
                   onClick={() => setExplorationMode('preference')}
-                  className={
-                    explorationMode === 'preference'
-                      ? 'flex-1 rounded-full bg-black text-white py-2 text-sm font-medium'
-                      : 'flex-1 rounded-full border py-2 text-sm font-medium text-zinc-700 dark:text-zinc-300'
-                  }
+                  className="flex-1"
                 >
                   Go with Preference
-                </button>
-                <button
+                </Button>
+                <Button
                   type="button"
+                  variant={explorationMode === 'novelty' ? 'primary' : 'outline'}
                   onClick={() => setExplorationMode('novelty')}
-                  className={
-                    explorationMode === 'novelty'
-                      ? 'flex-1 rounded-full bg-black text-white py-2 text-sm font-medium'
-                      : 'flex-1 rounded-full border py-2 text-sm font-medium text-zinc-700 dark:text-zinc-300'
-                  }
+                  className="flex-1"
                 >
                   Try Something New
-                </button>
+                </Button>
               </div>
 
-              <button
-                type="button"
-                onClick={handleGetRecommendations}
-                disabled={isRecommending}
-                className="rounded-full bg-black text-white py-2 font-medium disabled:opacity-50"
-              >
+              <Button type="button" onClick={handleGetRecommendations} disabled={isRecommending}>
                 {isRecommending ? 'Finding your next read…' : 'Get Recommendations'}
-              </button>
+              </Button>
             </div>
           )}
 
-          {recommendError && <p className="text-red-600 text-sm">{recommendError}</p>}
+          {recommendError && <p className="text-danger text-sm">{recommendError}</p>}
         </div>
       )}
 
       {recommendations && (
         <div className="w-full max-w-md flex flex-col gap-3">
-          <p className="text-sm text-gray-500">
+          <p className="text-sm text-muted-foreground">
             {recommendations.mode === 'cold_start'
               ? 'No reading history yet — matched against a curated catalog using your stated preferences.'
               : 'Matched against your own reading history.'}

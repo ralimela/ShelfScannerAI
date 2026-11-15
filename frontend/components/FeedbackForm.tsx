@@ -1,7 +1,11 @@
 'use client'
 
 import { useState } from 'react'
+import { Star } from 'lucide-react'
 import { submitFeedback } from '@/lib/api'
+import Button from '@/components/ui/Button'
+import Card from '@/components/ui/Card'
+import Input, { Textarea } from '@/components/ui/Input'
 import type { FeedbackResponse } from '@/lib/types'
 
 interface FeedbackFormProps {
@@ -51,76 +55,62 @@ export default function FeedbackForm({ userId, onSubmitted }: FeedbackFormProps)
   }
 
   return (
-    <form onSubmit={handleSubmit} className="w-full max-w-md flex flex-col gap-3 border rounded-xl p-4">
-      <h2 className="font-medium">Log a Finished Book</h2>
+    <Card className="w-full max-w-md">
+      <form onSubmit={handleSubmit} className="flex flex-col gap-3">
+        <h2 className="font-medium">Log a Finished Book</h2>
 
-      <input
-        type="text"
-        placeholder="Book ID (ISBN or title#author slug)"
-        value={bookId}
-        onChange={(e) => setBookId(e.target.value)}
-        className="border rounded-lg px-3 py-2 text-sm"
-        required
-      />
-      <input
-        type="text"
-        placeholder="Title"
-        value={title}
-        onChange={(e) => setTitle(e.target.value)}
-        className="border rounded-lg px-3 py-2 text-sm"
-      />
-      <input
-        type="text"
-        placeholder="Author"
-        value={author}
-        onChange={(e) => setAuthor(e.target.value)}
-        className="border rounded-lg px-3 py-2 text-sm"
-      />
+        <Input
+          type="text"
+          placeholder="Book ID (ISBN or title#author slug)"
+          value={bookId}
+          onChange={(e) => setBookId(e.target.value)}
+          required
+        />
+        <Input type="text" placeholder="Title" value={title} onChange={(e) => setTitle(e.target.value)} />
+        <Input type="text" placeholder="Author" value={author} onChange={(e) => setAuthor(e.target.value)} />
 
-      <div className="flex items-center gap-2">
-        <span className="text-sm text-gray-500">Rating</span>
-        {[1, 2, 3, 4, 5].map((value) => (
-          <button
-            key={value}
-            type="button"
-            onClick={() => setRating(value)}
-            className={value <= rating ? 'text-black dark:text-white' : 'text-gray-300'}
-            aria-label={`Rate ${value} stars`}
-          >
-            ★
-          </button>
-        ))}
-      </div>
-
-      <textarea
-        placeholder="What did you think of it?"
-        value={feedbackText}
-        onChange={(e) => setFeedbackText(e.target.value)}
-        className="border rounded-lg px-3 py-2 text-sm min-h-24"
-        required
-      />
-
-      <button
-        type="submit"
-        disabled={isSubmitting}
-        className="rounded-full bg-black text-white py-2 font-medium disabled:opacity-50"
-      >
-        {isSubmitting ? 'Updating taste profile…' : 'Submit Feedback'}
-      </button>
-
-      {error && <p className="text-red-600 text-sm">{error}</p>}
-
-      {result && (
-        <div className="text-sm text-gray-600 dark:text-zinc-400 flex flex-col gap-1">
-          <p>Taste profile updated.</p>
-          {result.extractedSignals.likedElements.length > 0 && (
-            <p>Liked: {result.extractedSignals.likedElements.join(', ')}</p>
-          )}
-          {result.extractedSignals.dislikedElements.length > 0 && (
-            <p>Disliked: {result.extractedSignals.dislikedElements.join(', ')}</p>
-          )}
+        <div className="flex items-center gap-2">
+          <span className="text-sm text-muted-foreground">Rating</span>
+          {[1, 2, 3, 4, 5].map((value) => (
+            <button
+              key={value}
+              type="button"
+              onClick={() => setRating(value)}
+              aria-label={`Rate ${value} stars`}
+            >
+              <Star
+                className={value <= rating ? 'w-4 h-4 text-accent fill-accent' : 'w-4 h-4 text-muted-foreground'}
+              />
+            </button>
+          ))}
         </div>
-      )}
-    </form>
+
+        <Textarea
+          placeholder="What did you think of it?"
+          value={feedbackText}
+          onChange={(e) => setFeedbackText(e.target.value)}
+          className="min-h-24"
+          required
+        />
+
+        <Button type="submit" disabled={isSubmitting}>
+          {isSubmitting ? 'Updating taste profile…' : 'Submit Feedback'}
+        </Button>
+
+        {error && <p className="text-danger text-sm">{error}</p>}
+
+        {result && (
+          <div className="text-sm text-muted-foreground flex flex-col gap-1">
+            <p>Taste profile updated.</p>
+            {result.extractedSignals.likedElements.length > 0 && (
+              <p>Liked: {result.extractedSignals.likedElements.join(', ')}</p>
+            )}
+            {result.extractedSignals.dislikedElements.length > 0 && (
+              <p>Disliked: {result.extractedSignals.dislikedElements.join(', ')}</p>
+            )}
+          </div>
+        )}
+      </form>
+    </Card>
   )
 }

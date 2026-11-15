@@ -3,9 +3,12 @@
 import { useCallback, useEffect, useState } from 'react'
 import FeedbackForm from '@/components/FeedbackForm'
 import OnboardingForm from '@/components/OnboardingForm'
+import PaceTimer from '@/components/PaceTimer'
+import Card from '@/components/ui/Card'
+import Pill from '@/components/ui/Pill'
 import { getUserProfile } from '@/lib/api'
 import { getOrCreateUserId } from '@/lib/user'
-import type { UserProfileResponse } from '@/lib/types'
+import type { PaceSession, UserProfileResponse } from '@/lib/types'
 
 function isNewUser(profile: UserProfileResponse): boolean {
   const { tasteProfile, totalBooksRead } = profile
@@ -18,11 +21,24 @@ function isNewUser(profile: UserProfileResponse): boolean {
   )
 }
 
-function Pill({ label }: { label: string }) {
+function PaceChart({ sessions }: { sessions: PaceSession[] }) {
+  const chronological = sessions.slice().reverse()
+  const maxRate = Math.max(...chronological.map((s) => s.pagesPerHour), 1)
+
   return (
-    <span className="text-xs rounded-full border px-3 py-1 text-zinc-600 dark:text-zinc-400">
-      {label}
-    </span>
+    <div className="flex flex-col gap-1">
+      <p className="text-xs text-muted-foreground">Recent pace (pages/hour)</p>
+      <div className="flex items-end gap-1 h-16">
+        {chronological.map((session, i) => (
+          <div
+            key={`${session.startedAt}-${i}`}
+            title={`${session.pagesPerHour} pages/hour`}
+            className="flex-1 bg-brand/70 rounded-t-sm min-h-1"
+            style={{ height: `${Math.max((session.pagesPerHour / maxRate) * 100, 6)}%` }}
+          />
+        ))}
+      </div>
+    </div>
   )
 }
 
@@ -50,25 +66,37 @@ export default function ProfilePage() {
   }, [loadProfile])
 
   return (
-    <main className="min-h-screen flex flex-col items-center gap-8 p-8">
+    <main className="flex flex-col items-center gap-8 px-6 py-10 flex-1">
       <h1 className="text-2xl font-semibold">Your Taste Profile</h1>
 
-      {error && <p className="text-red-600">{error}</p>}
+      {error && <p className="text-danger">{error}</p>}
 
       {profile && (
         <div className="w-full max-w-md flex flex-col gap-6">
-          <div className="border rounded-xl p-4 flex flex-col gap-3">
-            <div className="flex justify-between text-sm text-gray-500">
-              <span>{profile.totalBooksRead} books read</span>
-              <span>{profile.readingPace.avgPagesPerHour} pages/hour avg</span>
+          <Card className="flex flex-col gap-4">
+            <div className="flex gap-4">
+              <div className="flex-1 flex flex-col">
+                <span className="text-2xl font-semibold">{profile.totalBooksRead}</span>
+                <span className="text-xs text-muted-foreground">books read</span>
+              </div>
+              <div className="flex-1 flex flex-col">
+                <span className="text-2xl font-semibold">{profile.readingPace.avgPagesPerHour}</span>
+                <span className="text-xs text-muted-foreground">pages/hour avg</span>
+              </div>
+              <div className="flex-1 flex flex-col">
+                <span className="text-2xl font-semibold">{profile.readingPace.totalSessions}</span>
+                <span className="text-xs text-muted-foreground">pace sessions</span>
+              </div>
             </div>
+
+            {profile.recentPaceSessions.length > 0 && <PaceChart sessions={profile.recentPaceSessions} />}
 
             {profile.tasteProfile.favoriteAuthors.length > 0 && (
               <div className="flex flex-col gap-1">
-                <p className="text-xs text-gray-400">Favorite Authors</p>
+                <p className="text-xs text-muted-foreground">Favorite Authors</p>
                 <div className="flex flex-wrap gap-2">
                   {profile.tasteProfile.favoriteAuthors.map((author) => (
-                    <Pill key={author} label={author} />
+                    <Pill key={author}>{author}</Pill>
                   ))}
                 </div>
               </div>
@@ -76,10 +104,10 @@ export default function ProfilePage() {
 
             {profile.tasteProfile.writingStylePrefs.length > 0 && (
               <div className="flex flex-col gap-1">
-                <p className="text-xs text-gray-400">Writing Style Preferences</p>
+                <p className="text-xs text-muted-foreground">Writing Style Preferences</p>
                 <div className="flex flex-wrap gap-2">
                   {profile.tasteProfile.writingStylePrefs.map((pref) => (
-                    <Pill key={pref} label={pref} />
+                    <Pill key={pref}>{pref}</Pill>
                   ))}
                 </div>
               </div>
@@ -87,21 +115,27 @@ export default function ProfilePage() {
 
             {profile.tasteProfile.avoidThemes.length > 0 && (
               <div className="flex flex-col gap-1">
-                <p className="text-xs text-gray-400">Themes to Avoid</p>
+                <p className="text-xs text-muted-foreground">Themes to Avoid</p>
                 <div className="flex flex-wrap gap-2">
                   {profile.tasteProfile.avoidThemes.map((theme) => (
-                    <Pill key={theme} label={theme} />
+                    <Pill key={theme}>{theme}</Pill>
                   ))}
                 </div>
               </div>
             )}
 
             {profile.totalBooksRead === 0 && (
-              <p className="text-sm text-gray-500">
+              <p className="text-sm text-muted-foreground">
                 No feedback logged yet — submit one below to start building your taste profile.
               </p>
             )}
-          </div>
+          </Card>
+
+          {userId && (
+            <Card>
+              <PaceTimer userId={userId} onLogged={() => loadProfile(userId)} />
+            </Card>
+          )}
 
           {userId && isNewUser(profile) && (
             <OnboardingForm userId={userId} onSubmitted={() => loadProfile(userId)} />
@@ -109,14 +143,14 @@ export default function ProfilePage() {
 
           {profile.recentBooks.length > 0 && (
             <div className="flex flex-col gap-2">
-              <p className="text-sm text-gray-500">Recent Books</p>
+              <p className="text-sm text-muted-foreground">Recent Books</p>
               {profile.recentBooks.map((book) => (
-                <div key={`${book.bookId}-${book.readAt}`} className="border rounded-xl p-3 text-sm">
+                <Card key={`${book.bookId}-${book.readAt}`} className="text-sm p-3">
                   <p className="font-medium">{book.title}</p>
-                  <p className="text-gray-500">
+                  <p className="text-muted-foreground">
                     {book.author} {book.rating && `· ${book.rating}/5`}
                   </p>
-                </div>
+                </Card>
               ))}
             </div>
           )}

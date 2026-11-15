@@ -1,7 +1,9 @@
 'use client'
 
 import { useRef, useState } from 'react'
+import { Camera } from 'lucide-react'
 import { fileToCompressedBase64 } from '@/lib/imageUtils'
+import Button from '@/components/ui/Button'
 
 interface ImageUploaderProps {
   onUpload: (base64: string, contentType: string) => Promise<void>
@@ -37,25 +39,26 @@ export default function ImageUploader({ onUpload, isUploading }: ImageUploaderPr
         onChange={(e) => handleFile(e.target.files?.[0])}
       />
 
-      <button
+      <Button
         type="button"
         onClick={() => inputRef.current?.click()}
         disabled={isUploading}
-        className="w-full rounded-xl bg-black text-white py-3 font-medium disabled:opacity-50"
+        className="w-full"
       >
+        <Camera className="w-4 h-4" />
         {isUploading ? 'Scanning shelf…' : 'Take or Upload Bookshelf Photo'}
-      </button>
+      </Button>
 
       {previewUrl && (
         // eslint-disable-next-line @next/next/no-img-element
         <img
           src={previewUrl}
           alt="Bookshelf preview"
-          className="rounded-xl w-full object-cover max-h-80"
+          className="rounded-card w-full object-cover max-h-80 border border-border"
         />
       )}
 
-      {error && <p className="text-red-600 text-sm">{error}</p>}
+      {error && <p className="text-danger text-sm">{error}</p>}
     </div>
   )
 }
