@@ -80,6 +80,7 @@ export interface RecommendRequest {
   sessionId?: string
   candidates: RecommendCandidate[]
   constraints?: { maxCompletionDays?: number; mood?: string }
+  explorationMode?: 'preference' | 'novelty'
 }
 
 export interface SimilarToMatch {
@@ -102,6 +103,7 @@ export interface Recommendation {
 export interface RecommendResponse {
   sessionId: string
   mode: 'established' | 'cold_start'
+  explorationMode: 'preference' | 'novelty'
   recommendations: Recommendation[]
   tasteProfileUsed: Partial<TasteProfile>
   processingTimeMs: number

@@ -37,9 +37,18 @@ Resources:
       FunctionName: !Sub shelfscannerai-upload-handler-${Stage}
       CodeUri: upload_handler/
       Handler: app.lambda_handler
+      Layers:
+        # Pillow has a compiled C extension - building it locally on Windows
+        # without Docker would bundle incompatible binaries for Lambda's
+        # Linux runtime. Using a verified public layer instead of vendoring
+        # it ourselves (Klayers project, python3.12, us-east-1, confirmed
+        # via `aws lambda get-layer-version` before adding this).
+        - arn:aws:lambda:us-east-1:770693421928:layer:Klayers-p312-pillow:2
       Environment:
         Variables:
           S3_BUCKET_NAME: !Ref ShelfImagesBucket
+          BEDROCK_HAIKU_MODEL_ID: us.anthropic.claude-haiku-4-5-20251001-v1:0
+          BEDROCK_REGION: !Ref AWS::Region
       Policies:
         - Statement:
             - Sid: PutAndGetShelfImages
@@ -53,6 +62,17 @@ Resources:
               Action:
                 - rekognition:DetectText
               Resource: '*'
+            - Sid: BedrockInvokeHaikuViaInferenceProfile
+              Effect: Allow
+              Action: bedrock:InvokeModel
+              Resource: !Sub arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/us.anthropic.claude-haiku-4-5-20251001-v1:0
+            - Sid: BedrockInvokeHaikuUnderlyingModel
+              Effect: Allow
+              Action: bedrock:InvokeModel
+              Resource:
+                - arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-haiku-4-5-20251001-v1:0
+                - arn:aws:bedrock:us-east-2::foundation-model/anthropic.claude-haiku-4-5-20251001-v1:0
+                - arn:aws:bedrock:us-west-2::foundation-model/anthropic.claude-haiku-4-5-20251001-v1:0
       Events:
         UploadApi:
           Type: Api

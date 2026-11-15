@@ -30,6 +30,12 @@ CORS_HEADERS = {
 }
 
 NEAREST_MATCH_LIMIT = 3
+PROXY_SUBSET_SIZE = 15
+
+MODE_INSTRUCTIONS = {
+    "preference": "The reader wants books closest to their established taste. Prioritize candidates with the LOWEST distance to their similarity signal.",
+    "novelty": "The reader explicitly wants to try something OUTSIDE their usual taste today. Prioritize candidates with the HIGHEST distance to their similarity signal - a genuine stretch, not their usual pick. Still never recommend anything touching their avoid-themes below. Justify why it's a worthwhile stretch, not merely different.",
+}
 
 # Adapted from ShelfScannerAI_Handoff.md section 8, "Prompt 1 — Recommendation Agent"
 RECOMMENDATION_SYSTEM_PROMPT = """
@@ -66,7 +72,7 @@ OUTPUT FORMAT:
 """
 
 
-def build_recommendation_prompt(candidates_with_signals, taste_profile, mode, constraints):
+def build_recommendation_prompt(candidates_with_signals, taste_profile, mode, constraints, exploration_mode):
     history_label = "own reading history" if mode == "established" else "stated preferences, via a curated catalog standing in for history"
     return f"""
 AVAILABLE BOOKS (extracted from bookshelf photo), each with a similarity signal
@@ -78,6 +84,10 @@ USER TASTE PROFILE:
 
 CONSTRAINTS:
 {json.dumps(constraints or {}, indent=2)}
+
+READING INTENT FOR THIS REQUEST:
+{MODE_INSTRUCTIONS[exploration_mode]}
+Themes to avoid, regardless of intent: {json.dumps(taste_profile.get("avoidThemes", []))}
 
 Rank the available books for this reader. For each book, write reasoning that
 references the specific similar book(s) listed in its signal and/or the taste
@@ -113,6 +123,36 @@ def _default_taste_profile():
         "avoidThemes": [],
         "lastUpdated": _now_iso(),
     }
+
+
+def _has_preferences(taste_profile):
+    return bool(
+        taste_profile.get("favoriteAuthors")
+        or taste_profile.get("favoriteGenres")
+        or taste_profile.get("writingStylePrefs")
+    )
+
+
+def _preference_text(taste_profile):
+    parts = []
+    if taste_profile.get("favoriteAuthors"):
+        parts.append(f"Favorite authors: {', '.join(taste_profile['favoriteAuthors'])}.")
+    if taste_profile.get("favoriteGenres"):
+        parts.append(f"Favorite genres: {', '.join(taste_profile['favoriteGenres'])}.")
+    if taste_profile.get("writingStylePrefs"):
+        parts.append(f"Writing style preferences: {', '.join(taste_profile['writingStylePrefs'])}.")
+    return " ".join(parts)
+
+
+def _filter_disliked_genres(candidates, disliked_genres):
+    disliked_lower = {g.lower() for g in disliked_genres or []}
+    if not disliked_lower:
+        return list(candidates)
+    return [
+        c
+        for c in candidates
+        if not (set(g.lower() for g in c.get("genres") or []) & disliked_lower)
+    ]
 
 
 def _get_or_create_user(user_id):
@@ -209,17 +249,52 @@ def _nearest_history_matches(user_id, embedding_literal, limit=NEAREST_MATCH_LIM
     return _nearest_matches(sql, parameters)
 
 
-def _nearest_catalog_matches(embedding_literal, limit=NEAREST_MATCH_LIMIT):
+def _catalog_proxy_work_keys(embedding_literal, limit=PROXY_SUBSET_SIZE):
     sql = """
-        SELECT title, author, embedding <=> CAST(:embedding AS vector) AS distance
-        FROM catalog_embeddings
-        ORDER BY distance ASC
+        SELECT work_key FROM catalog_embeddings
+        ORDER BY embedding <=> CAST(:embedding AS vector) ASC
         LIMIT :limit;
     """
     parameters = [
         {"name": "embedding", "value": {"stringValue": embedding_literal}},
         {"name": "limit", "value": {"longValue": limit}},
     ]
+    result = rds_data.execute_statement(
+        resourceArn=AURORA_CLUSTER_ARN,
+        secretArn=AURORA_SECRET_ARN,
+        database=AURORA_DATABASE_NAME,
+        sql=sql,
+        parameters=parameters,
+    )
+    return [row[0]["stringValue"] for row in result.get("records", [])]
+
+
+def _nearest_catalog_matches(embedding_literal, work_keys=None, limit=NEAREST_MATCH_LIMIT):
+    parameters = [
+        {"name": "embedding", "value": {"stringValue": embedding_literal}},
+        {"name": "limit", "value": {"longValue": limit}},
+    ]
+    if work_keys:
+        # Named placeholders, not an arrayValue parameter - the RDS Data API
+        # flatly rejects array-type parameters (see handoff.md section 16.3).
+        # work_keys always come from our own catalog, never user input, so
+        # this is safe despite building the placeholder list dynamically.
+        placeholders = ", ".join(f":key{i}" for i in range(len(work_keys)))
+        parameters += [{"name": f"key{i}", "value": {"stringValue": k}} for i, k in enumerate(work_keys)]
+        sql = f"""
+            SELECT title, author, embedding <=> CAST(:embedding AS vector) AS distance
+            FROM catalog_embeddings
+            WHERE work_key IN ({placeholders})
+            ORDER BY distance ASC
+            LIMIT :limit;
+        """
+    else:
+        sql = """
+            SELECT title, author, embedding <=> CAST(:embedding AS vector) AS distance
+            FROM catalog_embeddings
+            ORDER BY distance ASC
+            LIMIT :limit;
+        """
     return _nearest_matches(sql, parameters)
 
 
@@ -242,6 +317,9 @@ def lambda_handler(event, context):
 
     session_id = body.get("sessionId") or f"sess_{uuid.uuid4().hex[:12]}"
     constraints = body.get("constraints")
+    exploration_mode = body.get("explorationMode")
+    if exploration_mode not in MODE_INSTRUCTIONS:
+        exploration_mode = "preference"
 
     user = _get_or_create_user(user_id)
     taste_profile = user.get("tasteProfile", _default_taste_profile())
@@ -249,9 +327,46 @@ def lambda_handler(event, context):
     established = _count_user_embeddings(user_id) > 0
     mode = "established" if established else "cold_start"
 
+    filtered_candidates = _filter_disliked_genres(candidates, taste_profile.get("dislikedGenres"))
+
+    if not filtered_candidates:
+        processing_time_ms = _elapsed_ms(start)
+        scan_sessions_table.put_item(
+            Item={
+                "sessionId": session_id,
+                "userId": user_id,
+                "scannedAt": _now_iso(),
+                "extractedTitles": [c.get("title") for c in candidates if c.get("title")],
+                "recommendedBooks": [],
+                "mode": mode,
+                "explorationMode": exploration_mode,
+                "processingTimeMs": processing_time_ms,
+            }
+        )
+        return {
+            "statusCode": 200,
+            "headers": {**CORS_HEADERS, "Content-Type": "application/json"},
+            "body": json.dumps(
+                {
+                    "sessionId": session_id,
+                    "mode": mode,
+                    "explorationMode": exploration_mode,
+                    "recommendations": [],
+                    "tasteProfileUsed": taste_profile,
+                    "processingTimeMs": processing_time_ms,
+                }
+            ),
+        }
+
+    proxy_work_keys = None
+    if not established and _has_preferences(taste_profile):
+        preference_embedding = _embed_text(_preference_text(taste_profile))
+        preference_literal = "[" + ",".join(str(v) for v in preference_embedding) + "]"
+        proxy_work_keys = _catalog_proxy_work_keys(preference_literal)
+
     candidates_with_signals = []
     matches_by_title = {}
-    for candidate in candidates:
+    for candidate in filtered_candidates:
         title = candidate.get("title")
         if not title:
             continue
@@ -265,7 +380,7 @@ def lambda_handler(event, context):
         matches = (
             _nearest_history_matches(user_id, embedding_literal)
             if established
-            else _nearest_catalog_matches(embedding_literal)
+            else _nearest_catalog_matches(embedding_literal, work_keys=proxy_work_keys)
         )
         matches_by_title[title.lower()] = matches
 
@@ -279,7 +394,15 @@ def lambda_handler(event, context):
             }
         )
 
-    prompt = build_recommendation_prompt(candidates_with_signals, taste_profile, mode, constraints)
+    def _sort_key(c):
+        matches = matches_by_title.get(c["title"].lower())
+        if not matches:
+            return float("inf")
+        return matches[0]["distance"]
+
+    candidates_with_signals.sort(key=_sort_key, reverse=(exploration_mode == "novelty"))
+
+    prompt = build_recommendation_prompt(candidates_with_signals, taste_profile, mode, constraints, exploration_mode)
     claude_output = _invoke_claude(RECOMMENDATION_SYSTEM_PROMPT, prompt)
 
     candidates_by_title = {c["title"].lower(): c for c in candidates_with_signals}
@@ -317,6 +440,7 @@ def lambda_handler(event, context):
             "extractedTitles": [c["title"] for c in candidates_with_signals],
             "recommendedBooks": _dynamo_safe(recommendations),
             "mode": mode,
+            "explorationMode": exploration_mode,
             "processingTimeMs": processing_time_ms,
         }
     )
@@ -328,6 +452,7 @@ def lambda_handler(event, context):
             {
                 "sessionId": session_id,
                 "mode": mode,
+                "explorationMode": exploration_mode,
                 "recommendations": recommendations,
                 "tasteProfileUsed": taste_profile,
                 "processingTimeMs": processing_time_ms,

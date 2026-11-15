@@ -15,6 +15,7 @@ export default function ScanPage() {
   const [isRecommending, setIsRecommending] = useState(false)
   const [recommendations, setRecommendations] = useState<RecommendResponse | null>(null)
   const [recommendError, setRecommendError] = useState<string | null>(null)
+  const [explorationMode, setExplorationMode] = useState<'preference' | 'novelty'>('preference')
 
   useEffect(() => {
     // localStorage isn't available during SSR, so this id must be read client-side in an effect.
@@ -54,6 +55,7 @@ export default function ScanPage() {
           pageCount: title.pageCount,
           genres: title.genres,
         })),
+        explorationMode,
       })
       setRecommendations(response)
     } catch (err) {
@@ -92,14 +94,41 @@ export default function ScanPage() {
           ))}
 
           {result.extractedTitles.length > 0 && !recommendations && (
-            <button
-              type="button"
-              onClick={handleGetRecommendations}
-              disabled={isRecommending}
-              className="rounded-full bg-black text-white py-2 font-medium disabled:opacity-50"
-            >
-              {isRecommending ? 'Finding your next read…' : 'Get Recommendations'}
-            </button>
+            <div className="flex flex-col gap-2">
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => setExplorationMode('preference')}
+                  className={
+                    explorationMode === 'preference'
+                      ? 'flex-1 rounded-full bg-black text-white py-2 text-sm font-medium'
+                      : 'flex-1 rounded-full border py-2 text-sm font-medium text-zinc-700 dark:text-zinc-300'
+                  }
+                >
+                  Go with Preference
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setExplorationMode('novelty')}
+                  className={
+                    explorationMode === 'novelty'
+                      ? 'flex-1 rounded-full bg-black text-white py-2 text-sm font-medium'
+                      : 'flex-1 rounded-full border py-2 text-sm font-medium text-zinc-700 dark:text-zinc-300'
+                  }
+                >
+                  Try Something New
+                </button>
+              </div>
+
+              <button
+                type="button"
+                onClick={handleGetRecommendations}
+                disabled={isRecommending}
+                className="rounded-full bg-black text-white py-2 font-medium disabled:opacity-50"
+              >
+                {isRecommending ? 'Finding your next read…' : 'Get Recommendations'}
+              </button>
+            </div>
           )}
 
           {recommendError && <p className="text-red-600 text-sm">{recommendError}</p>}
@@ -112,6 +141,7 @@ export default function ScanPage() {
             {recommendations.mode === 'cold_start'
               ? 'No reading history yet — matched against a curated catalog using your stated preferences.'
               : 'Matched against your own reading history.'}
+            {recommendations.explorationMode === 'novelty' && ' Showing something outside your usual taste.'}
           </p>
           <RecommendationList recommendations={recommendations.recommendations} />
         </div>
