@@ -419,7 +419,6 @@ def lambda_handler(event, context):
 
         recommendations.append(
             {
-                "rank": rec.get("rank", len(recommendations) + 1),
                 "title": candidate["title"],
                 "author": candidate["author"],
                 "pageCount": candidate["pageCount"],
@@ -429,6 +428,18 @@ def lambda_handler(event, context):
                 "similarTo": similar_to,
             }
         )
+
+    # Claude's own "rank" field in its JSON response reflects its holistic
+    # judgment (which can reasonably disagree with raw matchScore), but the
+    # UI shows a numeric match percentage right next to the rank - if the two
+    # don't correlate, the list looks broken even when it isn't. Sort and
+    # re-rank by matchScore explicitly so position always matches the score
+    # shown. Direction mirrors the candidate pre-sort above: "preference"
+    # wants the closest match first (descending score), "novelty" wants the
+    # most divergent pick first (ascending score - low match = more novel).
+    recommendations.sort(key=lambda r: r["matchScore"], reverse=(exploration_mode == "preference"))
+    for rank, rec in enumerate(recommendations, start=1):
+        rec["rank"] = rank
 
     processing_time_ms = _elapsed_ms(start)
 
