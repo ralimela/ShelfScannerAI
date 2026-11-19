@@ -150,3 +150,11 @@ export interface OnboardingResponse {
   userId: string
   tasteProfile: TasteProfile
 }
+
+export interface ClaimResult {
+  userId: string
+  claimed: boolean
+  booksRead: number
+  paceSessions: number
+  historyRows: number
+}

@@ -10,10 +10,11 @@ import type { FeedbackResponse } from '@/lib/types'
 
 interface FeedbackFormProps {
   userId: string
+  idToken?: string | null
   onSubmitted?: (response: FeedbackResponse) => void
 }
 
-export default function FeedbackForm({ userId, onSubmitted }: FeedbackFormProps) {
+export default function FeedbackForm({ userId, idToken = null, onSubmitted }: FeedbackFormProps) {
   const [bookId, setBookId] = useState('')
   const [title, setTitle] = useState('')
   const [author, setAuthor] = useState('')
@@ -31,15 +32,18 @@ export default function FeedbackForm({ userId, onSubmitted }: FeedbackFormProps)
     setError(null)
     setResult(null)
     try {
-      const response = await submitFeedback({
-        userId,
-        bookId,
-        rating,
-        feedbackText,
-        title: title || undefined,
-        author: author || undefined,
-        finishedAt: new Date().toISOString(),
-      })
+      const response = await submitFeedback(
+        {
+          userId,
+          bookId,
+          rating,
+          feedbackText,
+          title: title || undefined,
+          author: author || undefined,
+          finishedAt: new Date().toISOString(),
+        },
+        idToken
+      )
       setResult(response)
       onSubmitted?.(response)
       setBookId('')

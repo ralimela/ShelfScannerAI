@@ -9,6 +9,7 @@ import type { OnboardingResponse } from '@/lib/types'
 
 interface OnboardingFormProps {
   userId: string
+  idToken?: string | null
   onSubmitted?: (response: OnboardingResponse) => void
 }
 
@@ -19,7 +20,7 @@ function splitList(value: string): string[] {
     .filter(Boolean)
 }
 
-export default function OnboardingForm({ userId, onSubmitted }: OnboardingFormProps) {
+export default function OnboardingForm({ userId, idToken = null, onSubmitted }: OnboardingFormProps) {
   const [favoriteAuthors, setFavoriteAuthors] = useState('')
   const [favoriteGenres, setFavoriteGenres] = useState('')
   const [dislikedGenres, setDislikedGenres] = useState('')
@@ -34,13 +35,17 @@ export default function OnboardingForm({ userId, onSubmitted }: OnboardingFormPr
     setIsSubmitting(true)
     setError(null)
     try {
-      const response = await submitOnboarding(userId, {
-        favoriteAuthors: splitList(favoriteAuthors),
-        favoriteGenres: splitList(favoriteGenres),
-        dislikedGenres: splitList(dislikedGenres),
-        writingStylePrefs: splitList(writingStylePrefs),
-        avoidThemes: splitList(avoidThemes),
-      })
+      const response = await submitOnboarding(
+        userId,
+        {
+          favoriteAuthors: splitList(favoriteAuthors),
+          favoriteGenres: splitList(favoriteGenres),
+          dislikedGenres: splitList(dislikedGenres),
+          writingStylePrefs: splitList(writingStylePrefs),
+          avoidThemes: splitList(avoidThemes),
+        },
+        idToken
+      )
       setSubmitted(true)
       onSubmitted?.(response)
     } catch (err) {

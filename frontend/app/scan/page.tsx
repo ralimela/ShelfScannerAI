@@ -7,11 +7,14 @@ import Button from '@/components/ui/Button'
 import Card from '@/components/ui/Card'
 import Pill from '@/components/ui/Pill'
 import { getRecommendations, uploadShelfImage } from '@/lib/api'
+import { useAuth } from '@/lib/AuthContext'
 import { getOrCreateUserId } from '@/lib/user'
 import type { RecommendResponse, UploadResponse } from '@/lib/types'
 
 export default function ScanPage() {
-  const [userId, setUserId] = useState<string | null>(null)
+  const { user, idToken } = useAuth()
+  const [anonymousUserId, setAnonymousUserId] = useState<string | null>(null)
+  const userId = user?.userId ?? anonymousUserId
   const [isUploading, setIsUploading] = useState(false)
   const [result, setResult] = useState<UploadResponse | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -21,10 +24,11 @@ export default function ScanPage() {
   const [explorationMode, setExplorationMode] = useState<'preference' | 'novelty'>('preference')
 
   useEffect(() => {
+    if (user) return
     // localStorage isn't available during SSR, so this id must be read client-side in an effect.
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    setUserId(getOrCreateUserId())
-  }, [])
+    setAnonymousUserId(getOrCreateUserId())
+  }, [user])
 
   const handleUpload = async (base64: string, contentType: string) => {
     if (!userId) return
@@ -49,17 +53,20 @@ export default function ScanPage() {
     setRecommendError(null)
     setRecommendations(null)
     try {
-      const response = await getRecommendations({
-        userId,
-        sessionId: result.sessionId,
-        candidates: result.extractedTitles.map((title) => ({
-          title: title.title,
-          author: title.author,
-          pageCount: title.pageCount,
-          genres: title.genres,
-        })),
-        explorationMode,
-      })
+      const response = await getRecommendations(
+        {
+          userId,
+          sessionId: result.sessionId,
+          candidates: result.extractedTitles.map((title) => ({
+            title: title.title,
+            author: title.author,
+            pageCount: title.pageCount,
+            genres: title.genres,
+          })),
+          explorationMode,
+        },
+        idToken
+      )
       setRecommendations(response)
     } catch (err) {
       setRecommendError(err instanceof Error ? err.message : 'Getting recommendations failed')

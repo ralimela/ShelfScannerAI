@@ -50,6 +50,19 @@ def _default_taste_profile():
     }
 
 
+def _resolve_user_id(event, fallback_user_id):
+    """/me/pace-log carries a Cognito authorizer, so API Gateway has already
+    verified the bearer token by the time this runs and injected the claims
+    here - trust that identity over any path userId. The anonymous
+    /user/{userId}/pace-log route has no authorizer attached, so claims is
+    always empty there and this falls back to today's path value, unchanged.
+    """
+    claims = (event.get("requestContext") or {}).get("authorizer", {}).get("claims")
+    if claims and claims.get("sub"):
+        return claims["sub"], True
+    return fallback_user_id, False
+
+
 def _get_or_create_user(user_id):
     response = users_table.get_item(Key={"userId": user_id})
     item = response.get("Item")
@@ -81,7 +94,7 @@ def lambda_handler(event, context):
         return {"statusCode": 200, "headers": CORS_HEADERS, "body": ""}
 
     path_params = event.get("pathParameters") or {}
-    user_id = path_params.get("userId")
+    user_id, _authenticated = _resolve_user_id(event, path_params.get("userId"))
     if not user_id:
         return _error(400, "userId is required")
 

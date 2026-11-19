@@ -1140,6 +1140,46 @@ aws amplify get-job --app-id d3e1l3syrof2p7 --branch-name main --job-id <jobId> 
 
 **Bug hit live:** redirecting `aws amplify create-deployment --output json 2>&1 > /tmp/file.json` in Windows Git Bash silently failed to write the file at all (no error, file just didn't exist) — write AWS CLI JSON output to the session's own scratchpad directory instead of `/tmp` on this setup. The practical consequence: two `create-deployment` calls succeeded against AWS but their presigned URLs were never captured, leaving two jobs stuck in `PENDING` with no zip ever uploaded. `aws amplify create-deployment` refuses to start a new deployment while a previous job is unfinished (`BadRequestException`), fixed by `aws amplify stop-job --job-id <n>` on each stuck job before retrying.
 
+## 19. Addendum — Phase 5: Real Accounts (Cognito Sign-Up/Login + Guest-Data Claiming) (added November 2026)
+
+### 19.1 The gap this closes
+
+Every user was previously an anonymous `user_<uuid>` minted client-side into `localStorage`, trusted blindly by every backend endpoint — the request body or path simply said who it was, with nothing verifying it. This was flagged from the start as the project's top production-readiness gap (section 10f, and the interview-prep doc's own answer to "what's missing"). This addendum closes it with Amazon Cognito, while deliberately keeping guest/anonymous scanning fully working with no account — signing in is additive, not a wall.
+
+### 19.2 Architecture: a parallel `/me/...` route set, zero duplicated business logic
+
+Rather than retrofitting a custom Lambda authorizer onto the existing routes, every one of the four existing handlers (`user_handler`, `recommend_handler`, `feedback_handler`, `pace_handler`) gained a *second*, parallel route under `/me/...`, pointed at the exact same Lambda, protected by a native API Gateway Cognito User Pool authorizer (`AWS::Serverless::Api`'s `Auth.Authorizers` — no custom authorizer Lambda, no JWT-verification library in Python at all; API Gateway verifies the bearer token before the Lambda runs and injects the claims into `event.requestContext.authorizer.claims`). Each handler gained one small duplicated helper:
+
+```python
+def _resolve_user_id(event, fallback_user_id):
+    claims = (event.get("requestContext") or {}).get("authorizer", {}).get("claims")
+    if claims and claims.get("sub"):
+        return claims["sub"], True  # authenticated - trust the verified token
+    return fallback_user_id, False  # anonymous - unchanged behavior
+```
+
+The old anonymous routes have no authorizer attached, so `claims` is always empty there and behavior is byte-for-byte unchanged for guests. This pattern — duplicating a handful of lines per file rather than sharing a module across Lambdas — matches the project's existing convention (`_now_iso()`, `_get_or_create_user()` are already duplicated the same way).
+
+### 19.3 Claiming a guest's data: `auth_handler/app.py`, `POST /me/claim`
+
+A brand-new Lambda, Cognito-protected, that migrates an anonymous guest's `tasteProfile`/`readingPace`/`totalBooksRead`, `ReadingHistory` rows, `PaceSessions` rows, `ScanSessions` rows, and Aurora `book_embeddings` onto the authenticated account's identity (the Cognito `sub`) — idempotent (safe to call twice, a clean no-op if the anonymous id never existed or was already claimed), and merges rather than overwrites if the authenticated account already has its own profile from a prior session (dedupe-append per taste-profile list field; the reading-pace side with more logged sessions wins outright rather than averaging two rolling averages together, which would produce a number that doesn't mean anything).
+
+**Fixed a pre-existing gap while touching this table anyway:** `ScanSessionsTable` had only a `sessionId` HASH key despite every item carrying a `userId` attribute (a documented gap from the Phase 3 build — no way to look up a user's sessions without a full table Scan). Added a `userId-index` GSI, which is what lets the claim flow re-key scan sessions with a `Query` instead of a `Scan`.
+
+**Bug hit live:** the very first live `/me/claim` call 502'd with `ValidationException: Cannot read from backfilling global secondary index: userId-index`. Not a code bug — a newly-created GSI on DynamoDB goes through an asynchronous backfill before it's queryable, even on a near-empty table, and this one took a few minutes. Waited for `aws dynamodb describe-table`'s `IndexStatus` to report `ACTIVE`, then retried. The retry is itself a live demonstration that the migration is actually idempotent: the first (crashed) attempt had already merged the taste profile and moved the pace session before the GSI step failed, and re-running it afterward correctly found nothing left to move for those two pieces while still completing the scan-session re-key and the final delete of the now-fully-migrated anonymous record.
+
+**Live-verified, full round trip:** seeded a guest (`onboarding` preferences + a pace session + a `/recommend` call that logged a `ScanSessions` row) → created a real Cognito test account via `admin-create-user`/`admin-set-user-password`/`admin-initiate-auth` (temporarily added `ALLOW_ADMIN_USER_PASSWORD_AUTH` to the app client specifically to get a real ID token from the CLI without implementing SRP by hand — harmless to leave enabled since it requires the caller to already hold AWS IAM credentials, not something a public end user can reach) → called `/me/claim` with a real bearer token → confirmed via direct DynamoDB reads (not just the API's own response) that the taste profile merged, the pace session moved, the scan session's `userId` attribute was re-keyed, and the old anonymous `Users` item was deleted (a subsequent `GET` on the old anonymous id correctly lazily recreated a fresh, empty guest record rather than returning stale data).
+
+### 19.4 Frontend: Cognito-direct auth, no backend-for-frontend
+
+`amazon-cognito-identity-js` (direct SRP email/password against the User Pool) rather than the full `aws-amplify` package — lighter, and consistent with this project's "plain React state, no heavy deps" approach elsewhere. Google sign-in goes through the Cognito Hosted UI's OAuth2 endpoints with PKCE (required for a public client with no secret) — `/login` builds the authorize URL and redirects, `/auth/callback` exchanges the code. **Google is feature-flagged off** (`NEXT_PUBLIC_GOOGLE_SIGNIN_ENABLED`) — the Cognito Google identity provider itself isn't wired up yet because that requires a Google Cloud OAuth client, which only the project owner can create; the code path is built and tested, just inert until that happens and the Cognito User Pool Client's `SupportedIdentityProviders` list is updated in a short, deliberate follow-up (not attempted blind, since CloudFormation's `DependsOn` cannot target a conditionally-created resource from an unconditional one — a real limitation discovered while designing this, not guessed).
+
+`AuthContext` persists tokens to `localStorage` (the same client-only-identity tradeoff already accepted everywhere else in this app — there's no backend-for-frontend to use httpOnly cookies) and auto-refreshes before the ~1 hour expiry. The claim call fires once per authenticated account (not once per browser session) via a `localStorage` flag, and a one-time banner on `/profile` tells the user specifically what was carried over ("we brought over 2 logged books and 1 pace session") rather than silently merging it.
+
+### 19.5 First test coverage this repo has had
+
+Backend: `pytest` + `moto` (`backend/tests/`) — `_resolve_user_id`'s three branches, and `claim_anonymous_data`'s migration/merge/idempotency/self-claim-guard logic against a mocked DynamoDB (the one RDS Data API call is stubbed, since moto doesn't mock it at all). Frontend: `jest` + React Testing Library (`frontend/lib/__tests__/`, `frontend/app/login/__tests__/`) — PKCE verifier/challenge generation and replay-protection, and the login page's tab toggle, failure path, and success-redirect-with-claim-banner path. Deliberately out of scope: full Cypress/Playwright e2e against live Cognito OAuth — mocking a real hosted-UI redirect in CI is disproportionate to this project's scale, the same honest-gaps framing used everywhere else in this handoff.
+
 ---
 
 *Handoff prepared July 2026. All architecture decisions, schema, and prompts are ready for implementation. Start with Phase 1 — vision pipeline — and validate extraction accuracy before building the recommendation layer.*

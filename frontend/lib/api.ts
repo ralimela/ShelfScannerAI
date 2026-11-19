@@ -1,4 +1,5 @@
 import type {
+  ClaimResult,
   FeedbackRequest,
   FeedbackResponse,
   OnboardingRequest,
@@ -13,122 +14,88 @@ import type {
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL
 
+async function apiFetch(path: string, idToken: string | null, init: RequestInit = {}): Promise<Response> {
+  if (!API_BASE_URL) {
+    throw new Error('NEXT_PUBLIC_API_BASE_URL is not configured')
+  }
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    ...(init.headers as Record<string, string> | undefined),
+  }
+  if (idToken) {
+    headers.Authorization = `Bearer ${idToken}`
+  }
+  return fetch(`${API_BASE_URL}${path}`, { ...init, headers })
+}
+
+async function parseOrThrow<T>(res: Response, fallbackMessage: string): Promise<T> {
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}))
+    throw new Error(body.error || `${fallbackMessage} (status ${res.status})`)
+  }
+  return res.json()
+}
+
 export async function uploadShelfImage(
   userId: string,
   imageBase64: string,
   imageType: string
 ): Promise<UploadResponse> {
-  if (!API_BASE_URL) {
-    throw new Error('NEXT_PUBLIC_API_BASE_URL is not configured')
-  }
-
-  const res = await fetch(`${API_BASE_URL}/upload`, {
+  const res = await apiFetch('/upload', null, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ userId, imageBase64, imageType }),
   })
-
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({}))
-    throw new Error(body.error || `Upload failed with status ${res.status}`)
-  }
-
-  return res.json()
+  return parseOrThrow(res, 'Upload failed')
 }
 
-export async function getUserProfile(userId: string): Promise<UserProfileResponse> {
-  if (!API_BASE_URL) {
-    throw new Error('NEXT_PUBLIC_API_BASE_URL is not configured')
-  }
-
-  const res = await fetch(`${API_BASE_URL}/user/${userId}/profile`)
-
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({}))
-    throw new Error(body.error || `Fetching profile failed with status ${res.status}`)
-  }
-
-  return res.json()
+export async function getUserProfile(userId: string, idToken: string | null = null): Promise<UserProfileResponse> {
+  const path = idToken ? '/me/profile' : `/user/${userId}/profile`
+  const res = await apiFetch(path, idToken)
+  return parseOrThrow(res, 'Fetching profile failed')
 }
 
-export async function submitFeedback(payload: FeedbackRequest): Promise<FeedbackResponse> {
-  if (!API_BASE_URL) {
-    throw new Error('NEXT_PUBLIC_API_BASE_URL is not configured')
-  }
-
-  const res = await fetch(`${API_BASE_URL}/feedback`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  })
-
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({}))
-    throw new Error(body.error || `Submitting feedback failed with status ${res.status}`)
-  }
-
-  return res.json()
+export async function submitFeedback(
+  payload: FeedbackRequest,
+  idToken: string | null = null
+): Promise<FeedbackResponse> {
+  const path = idToken ? '/me/feedback' : '/feedback'
+  const res = await apiFetch(path, idToken, { method: 'POST', body: JSON.stringify(payload) })
+  return parseOrThrow(res, 'Submitting feedback failed')
 }
 
-export async function getRecommendations(payload: RecommendRequest): Promise<RecommendResponse> {
-  if (!API_BASE_URL) {
-    throw new Error('NEXT_PUBLIC_API_BASE_URL is not configured')
-  }
-
-  const res = await fetch(`${API_BASE_URL}/recommend`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  })
-
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({}))
-    throw new Error(body.error || `Getting recommendations failed with status ${res.status}`)
-  }
-
-  return res.json()
+export async function getRecommendations(
+  payload: RecommendRequest,
+  idToken: string | null = null
+): Promise<RecommendResponse> {
+  const path = idToken ? '/me/recommend' : '/recommend'
+  const res = await apiFetch(path, idToken, { method: 'POST', body: JSON.stringify(payload) })
+  return parseOrThrow(res, 'Getting recommendations failed')
 }
 
 export async function logPaceSession(
   userId: string,
-  payload: PaceLogRequest
+  payload: PaceLogRequest,
+  idToken: string | null = null
 ): Promise<PaceLogResponse> {
-  if (!API_BASE_URL) {
-    throw new Error('NEXT_PUBLIC_API_BASE_URL is not configured')
-  }
-
-  const res = await fetch(`${API_BASE_URL}/user/${userId}/pace-log`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  })
-
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({}))
-    throw new Error(body.error || `Logging pace session failed with status ${res.status}`)
-  }
-
-  return res.json()
+  const path = idToken ? '/me/pace-log' : `/user/${userId}/pace-log`
+  const res = await apiFetch(path, idToken, { method: 'POST', body: JSON.stringify(payload) })
+  return parseOrThrow(res, 'Logging pace session failed')
 }
 
 export async function submitOnboarding(
   userId: string,
-  payload: OnboardingRequest
+  payload: OnboardingRequest,
+  idToken: string | null = null
 ): Promise<OnboardingResponse> {
-  if (!API_BASE_URL) {
-    throw new Error('NEXT_PUBLIC_API_BASE_URL is not configured')
-  }
+  const path = idToken ? '/me/onboarding' : `/user/${userId}/onboarding`
+  const res = await apiFetch(path, idToken, { method: 'POST', body: JSON.stringify(payload) })
+  return parseOrThrow(res, 'Submitting onboarding failed')
+}
 
-  const res = await fetch(`${API_BASE_URL}/user/${userId}/onboarding`, {
+export async function claimAnonymousData(idToken: string, anonymousUserId: string): Promise<ClaimResult> {
+  const res = await apiFetch('/me/claim', idToken, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
+    body: JSON.stringify({ anonymousUserId }),
   })
-
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({}))
-    throw new Error(body.error || `Submitting onboarding failed with status ${res.status}`)
-  }
-
-  return res.json()
+  return parseOrThrow(res, 'Claiming guest data failed')
 }

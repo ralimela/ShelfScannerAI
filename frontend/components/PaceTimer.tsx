@@ -9,6 +9,7 @@ import type { PaceLogResponse } from '@/lib/types'
 
 interface PaceTimerProps {
   userId: string
+  idToken?: string | null
   onLogged?: (response: PaceLogResponse) => void
 }
 
@@ -19,7 +20,7 @@ function formatElapsed(ms: number): string {
   return `${minutes}:${seconds.toString().padStart(2, '0')}`
 }
 
-export default function PaceTimer({ userId, onLogged }: PaceTimerProps) {
+export default function PaceTimer({ userId, idToken = null, onLogged }: PaceTimerProps) {
   const [startedAt, setStartedAt] = useState<string | null>(null)
   const [elapsedMs, setElapsedMs] = useState(0)
   const [title, setTitle] = useState('')
@@ -60,13 +61,17 @@ export default function PaceTimer({ userId, onLogged }: PaceTimerProps) {
     setIsSubmitting(true)
     setError(null)
     try {
-      const response = await logPaceSession(userId, {
-        title: title || undefined,
-        author: author || undefined,
-        startedAt,
-        endedAt: new Date().toISOString(),
-        pagesRead: pages,
-      })
+      const response = await logPaceSession(
+        userId,
+        {
+          title: title || undefined,
+          author: author || undefined,
+          startedAt,
+          endedAt: new Date().toISOString(),
+          pagesRead: pages,
+        },
+        idToken
+      )
       setLastResult(response)
       onLogged?.(response)
       setStartedAt(null)

@@ -10,6 +10,9 @@ Description: >
   (catalog_embeddings) bootstrapping cold-start users via onboarding preferences (Phase 3).
   Reading-pace timer sessions feeding a rolling pages-per-hour average into the
   recommendation engine's completion-time estimates (Phase 4).
+  Cognito-backed sign-up/login with a claim flow that migrates an anonymous
+  guest's taste profile, reading history, and pace sessions onto their new
+  account (Phase 5).
 
 Parameters:
   Stage:
@@ -138,9 +141,22 @@ Resources:
       AttributeDefinitions:
         - AttributeName: sessionId
           AttributeType: S
+        - AttributeName: userId
+          AttributeType: S
       KeySchema:
         - AttributeName: sessionId
           KeyType: HASH
+      # Added for Phase 5 (account claiming): every item already carried a userId
+      # attribute but had no way to look up a user's sessions other than a full
+      # table Scan. This GSI is what lets the claim flow re-key a guest's scan
+      # sessions onto their new account with a Query instead of a Scan.
+      GlobalSecondaryIndexes:
+        - IndexName: userId-index
+          KeySchema:
+            - AttributeName: userId
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
 
   PaceSessionsTable:
     Type: AWS::DynamoDB::Table
@@ -316,6 +332,22 @@ Resources:
             Path: /user/{userId}/onboarding
             Method: post
             RestApiId: !Ref ShelfScannerApi
+        GetMeProfile:
+          Type: Api
+          Properties:
+            Path: /me/profile
+            Method: get
+            RestApiId: !Ref ShelfScannerApi
+            Auth:
+              Authorizer: CognitoAuthorizer
+        PostMeOnboarding:
+          Type: Api
+          Properties:
+            Path: /me/onboarding
+            Method: post
+            RestApiId: !Ref ShelfScannerApi
+            Auth:
+              Authorizer: CognitoAuthorizer
 
   FeedbackHandlerFunction:
     Type: AWS::Serverless::Function
@@ -394,6 +426,14 @@ Resources:
             Path: /feedback
             Method: post
             RestApiId: !Ref ShelfScannerApi
+        PostMeFeedback:
+          Type: Api
+          Properties:
+            Path: /me/feedback
+            Method: post
+            RestApiId: !Ref ShelfScannerApi
+            Auth:
+              Authorizer: CognitoAuthorizer
 
   # ---------------------------------------------------------------------
   # Phase 3 - Recommendation engine
@@ -463,6 +503,14 @@ Resources:
             Path: /recommend
             Method: post
             RestApiId: !Ref ShelfScannerApi
+        PostMeRecommend:
+          Type: Api
+          Properties:
+            Path: /me/recommend
+            Method: post
+            RestApiId: !Ref ShelfScannerApi
+            Auth:
+              Authorizer: CognitoAuthorizer
 
   # ---------------------------------------------------------------------
   # Phase 4 - Reading pace tracking
@@ -500,6 +548,157 @@ Resources:
             Path: /user/{userId}/pace-log
             Method: post
             RestApiId: !Ref ShelfScannerApi
+        PostMePaceLog:
+          Type: Api
+          Properties:
+            Path: /me/pace-log
+            Method: post
+            RestApiId: !Ref ShelfScannerApi
+            Auth:
+              Authorizer: CognitoAuthorizer
+
+  # ---------------------------------------------------------------------
+  # Phase 5 - Authentication (Cognito) + account claiming
+  #
+  # Anonymous/guest mode is unchanged: the routes above with no Cognito
+  # authorizer keep trusting whatever userId is in the path/body, exactly as
+  # before. Every handler above also now accepts a second, parallel route
+  # under /me/... that DOES carry a CognitoAuthorizer - API Gateway verifies
+  # the bearer token before the Lambda runs and injects the verified claims
+  # into event.requestContext.authorizer.claims, which each handler's
+  # _resolve_user_id() helper trusts over any path/body userId. No JWT
+  # library or custom authorizer Lambda needed - this is native REST API
+  # support for Cognito User Pool authorizers.
+  #
+  # Google sign-in is NOT wired up yet - this account was created without a
+  # Google OAuth client, which only the project owner can create (Google
+  # Cloud Console). Adding it later is a small, deliberate follow-up (a new
+  # AWS::Cognito::UserPoolIdentityProvider plus updating UserPoolClient's
+  # SupportedIdentityProviders below), not attempted here since its
+  # correctness can't be live-verified without real Google credentials.
+  # ---------------------------------------------------------------------
+
+  UserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: !Sub shelfscannerai-users-${Stage}
+      UsernameAttributes:
+        - email
+      AutoVerifiedAttributes:
+        - email
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 8
+          RequireUppercase: true
+          RequireLowercase: true
+          RequireNumbers: true
+          RequireSymbols: false
+      AccountRecoverySetting:
+        RecoveryMechanisms:
+          - Name: verified_email
+            Priority: 1
+
+  UserPoolDomain:
+    Type: AWS::Cognito::UserPoolDomain
+    Properties:
+      # Cognito domain prefixes are globally unique across every AWS account
+      # in the region, hence the account id in the name.
+      Domain: !Sub shelfscannerai-${AWS::AccountId}-${Stage}
+      UserPoolId: !Ref UserPool
+
+  UserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      ClientName: !Sub shelfscannerai-web-${Stage}
+      UserPoolId: !Ref UserPool
+      GenerateSecret: false
+      ExplicitAuthFlows:
+        - ALLOW_USER_SRP_AUTH
+        - ALLOW_REFRESH_TOKEN_AUTH
+        - ALLOW_ADMIN_USER_PASSWORD_AUTH
+      AllowedOAuthFlowsUserPoolClient: true
+      AllowedOAuthFlows:
+        - code
+      AllowedOAuthScopes:
+        - openid
+        - email
+        - profile
+      CallbackURLs:
+        - https://main.d3e1l3syrof2p7.amplifyapp.com/auth/callback
+        - http://localhost:3000/auth/callback
+      LogoutURLs:
+        - https://main.d3e1l3syrof2p7.amplifyapp.com/
+        - http://localhost:3000/
+      SupportedIdentityProviders:
+        - COGNITO
+
+  AuthHandlerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub shelfscannerai-auth-handler-${Stage}
+      CodeUri: auth_handler/
+      Handler: app.lambda_handler
+      Timeout: 30
+      Environment:
+        Variables:
+          DYNAMODB_USERS_TABLE: !Ref UsersTable
+          DYNAMODB_HISTORY_TABLE: !Ref ReadingHistoryTable
+          DYNAMODB_PACE_SESSIONS_TABLE: !Ref PaceSessionsTable
+          DYNAMODB_SCAN_SESSIONS_TABLE: !Ref ScanSessionsTable
+          AURORA_CLUSTER_ARN: !GetAtt AuroraCluster.DBClusterArn
+          AURORA_SECRET_ARN: !GetAtt AuroraCluster.MasterUserSecret.SecretArn
+          AURORA_DATABASE_NAME: shelfscanner
+      Policies:
+        - Statement:
+            - Sid: UsersReadWriteDelete
+              Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:PutItem
+                - dynamodb:DeleteItem
+              Resource: !GetAtt UsersTable.Arn
+            - Sid: HistoryReadAndBatchRewrite
+              Effect: Allow
+              Action:
+                - dynamodb:Query
+                - dynamodb:BatchWriteItem
+              Resource: !GetAtt ReadingHistoryTable.Arn
+            - Sid: PaceSessionsReadAndBatchRewrite
+              Effect: Allow
+              Action:
+                - dynamodb:Query
+                - dynamodb:BatchWriteItem
+              Resource: !GetAtt PaceSessionsTable.Arn
+            - Sid: ScanSessionsQueryByUserIndex
+              Effect: Allow
+              Action: dynamodb:Query
+              Resource: !Sub ${ScanSessionsTable.Arn}/index/userId-index
+            - Sid: ScanSessionsUpdateByKey
+              Effect: Allow
+              Action: dynamodb:UpdateItem
+              Resource: !GetAtt ScanSessionsTable.Arn
+            - Sid: DataApiRekeyEmbeddings
+              Effect: Allow
+              Action:
+                - rds-data:ExecuteStatement
+                - rds-data:BatchExecuteStatement
+                - rds-data:BeginTransaction
+                - rds-data:CommitTransaction
+                - rds-data:RollbackTransaction
+              Resource: !GetAtt AuroraCluster.DBClusterArn
+            - Sid: DataApiSecret
+              Effect: Allow
+              Action: secretsmanager:GetSecretValue
+              Resource: !GetAtt AuroraCluster.MasterUserSecret.SecretArn
+      Events:
+        PostMeClaim:
+          Type: Api
+          Properties:
+            Path: /me/claim
+            Method: post
+            RestApiId: !Ref ShelfScannerApi
+            Auth:
+              Authorizer: CognitoAuthorizer
 
   ShelfScannerApi:
     Type: AWS::Serverless::Api
@@ -507,8 +706,12 @@ Resources:
       StageName: !Ref Stage
       Cors:
         AllowMethods: "'GET, POST, OPTIONS'"
-        AllowHeaders: "'Content-Type'"
+        AllowHeaders: "'Content-Type, Authorization'"
         AllowOrigin: "'*'"
+      Auth:
+        Authorizers:
+          CognitoAuthorizer:
+            UserPoolArn: !GetAtt UserPool.Arn
 
 Outputs:
   ApiBaseUrl:
@@ -559,3 +762,15 @@ Outputs:
   AuroraClusterArn:
     Description: Aurora Serverless v2 cluster ARN (needed by backend/scripts/ingest_catalog.py)
     Value: !GetAtt AuroraCluster.DBClusterArn
+  UserPoolId:
+    Description: Cognito User Pool id (needed by the frontend's .env.local)
+    Value: !Ref UserPool
+  UserPoolClientId:
+    Description: Cognito User Pool app client id (needed by the frontend's .env.local)
+    Value: !Ref UserPoolClient
+  CognitoDomain:
+    Description: Cognito Hosted UI domain, used for the OAuth2 authorize/token endpoints
+    Value: !Sub https://${UserPoolDomain}.auth.${AWS::Region}.amazoncognito.com
+  MeClaimEndpoint:
+    Description: POST endpoint that migrates an anonymous guest's data onto the signed-in account
+    Value: !Sub https://${ShelfScannerApi}.execute-api.${AWS::Region}.amazonaws.com/${Stage}/me/claim

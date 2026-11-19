@@ -92,6 +92,19 @@ def _default_taste_profile():
     }
 
 
+def _resolve_user_id(event, fallback_user_id):
+    """/me/feedback carries a Cognito authorizer, so API Gateway has already
+    verified the bearer token by the time this runs and injected the claims
+    here - trust that identity over whatever userId is in the body. The
+    anonymous /feedback route has no authorizer attached, so claims is
+    always empty there and this falls back to today's body value, unchanged.
+    """
+    claims = (event.get("requestContext") or {}).get("authorizer", {}).get("claims")
+    if claims and claims.get("sub"):
+        return claims["sub"], True
+    return fallback_user_id, False
+
+
 def _get_or_create_user(user_id):
     response = users_table.get_item(Key={"userId": user_id})
     item = response.get("Item")
@@ -245,7 +258,7 @@ def lambda_handler(event, context):
     except json.JSONDecodeError:
         return _error(400, "Request body must be valid JSON")
 
-    user_id = body.get("userId")
+    user_id, _authenticated = _resolve_user_id(event, body.get("userId"))
     book_id = body.get("bookId")
     rating = body.get("rating")
     feedback_text = body.get("feedbackText")
