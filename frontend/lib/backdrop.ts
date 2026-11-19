@@ -74,10 +74,10 @@ export function buildTasteBackdrop(seedKey: string, signals: string[]): Backdrop
   const tertiaryHue = signals[2] ? hueForGenre(signals[2], seed >>> 7) : (primaryHue + 200) % 360
 
   return [primaryHue, secondaryHue, tertiaryHue].map((hue, i) => ({
-    x: 10 + random() * 75,
-    y: 5 + random() * 55 + i * 8,
-    size: 240 + random() * 200,
+    x: 15 + random() * 70,
+    y: 10 + random() * 60,
+    size: 320 + random() * 220,
     hue,
-    opacity: 0.24 - i * 0.05,
+    opacity: 0.55 - i * 0.12,
   }))
 }

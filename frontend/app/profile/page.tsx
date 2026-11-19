@@ -107,31 +107,31 @@ export default function ProfilePage() {
     : []
 
   return (
-    <main className="relative flex flex-col items-center gap-8 px-6 py-10 flex-1">
-      <TasteBackdrop seedKey={userId ?? 'guest'} signals={backdropSignals} />
+    <main className="flex flex-col items-center gap-8 px-6 py-10 flex-1">
+      <div className="relative w-full flex flex-col items-center gap-6 pb-4">
+        <TasteBackdrop seedKey={userId ?? 'guest'} signals={backdropSignals} />
 
-      <h1 className="text-2xl font-semibold">Your Taste Profile</h1>
+        <h1 className="text-2xl font-semibold">Your Taste Profile</h1>
 
-      <Suspense fallback={null}>
-        <ClaimBanner />
-      </Suspense>
+        <Suspense fallback={null}>
+          <ClaimBanner />
+        </Suspense>
 
-      {!user && (
-        <Card className="w-full max-w-md flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-          <p className="text-sm text-muted-foreground">Sign up to save this across devices.</p>
-          <Link href="/login" className="shrink-0">
-            <Button type="button" size="sm" className="w-full sm:w-auto">
-              Sign up
-            </Button>
-          </Link>
-        </Card>
-      )}
+        {!user && (
+          <Card className="w-full max-w-md flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <p className="text-sm text-muted-foreground">Sign up to save this across devices.</p>
+            <Link href="/login" className="shrink-0">
+              <Button type="button" size="sm" className="w-full sm:w-auto">
+                Sign up
+              </Button>
+            </Link>
+          </Card>
+        )}
 
-      {error && <p className="text-danger">{error}</p>}
+        {error && <p className="text-danger">{error}</p>}
 
-      {profile && (
-        <div className="w-full max-w-md flex flex-col gap-6">
-          <Card className="relative overflow-hidden flex flex-col gap-4">
+        {profile && (
+          <Card className="w-full max-w-md relative overflow-hidden flex flex-col gap-4">
             <div className="absolute inset-x-0 top-0 h-1 bg-gradient-to-r from-brand to-accent" />
 
             <div className="flex items-center gap-3">
@@ -170,7 +170,11 @@ export default function ProfilePage() {
               </p>
             )}
           </Card>
+        )}
+      </div>
 
+      {profile && (
+        <div className="w-full max-w-md flex flex-col gap-6">
           {userId && (
             <Card>
               <PaceTimer userId={userId} idToken={idToken} onLogged={() => loadProfile(userId, idToken)} />

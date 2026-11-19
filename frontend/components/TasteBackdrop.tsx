@@ -24,8 +24,8 @@ export default function TasteBackdrop({ seedKey, signals }: TasteBackdropProps) 
             width: blob.size,
             height: blob.size,
             transform: 'translate(-50%, -50%)',
-            background: `radial-gradient(circle, hsl(${blob.hue} 75% 55% / ${blob.opacity}), transparent 70%)`,
-            filter: 'blur(60px)',
+            background: `radial-gradient(circle, hsl(${blob.hue} 85% 58% / ${blob.opacity}), transparent 70%)`,
+            filter: 'blur(45px)',
           }}
         />
       ))}
