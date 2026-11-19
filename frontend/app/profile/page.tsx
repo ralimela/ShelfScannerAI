@@ -9,6 +9,7 @@ import OnboardingForm from '@/components/OnboardingForm'
 import PaceSparkline from '@/components/PaceSparkline'
 import PaceTimer from '@/components/PaceTimer'
 import TagSection from '@/components/TagSection'
+import TasteBackdrop from '@/components/TasteBackdrop'
 import Button from '@/components/ui/Button'
 import Card from '@/components/ui/Card'
 import { getUserProfile } from '@/lib/api'
@@ -101,9 +102,14 @@ export default function ProfilePage() {
 
   const tagline = profile ? readingTagline(profile) : null
   const avatarLetter = (user?.email ?? '?').charAt(0).toUpperCase()
+  const backdropSignals = profile
+    ? [...profile.tasteProfile.favoriteGenres, ...profile.tasteProfile.favoriteAuthors]
+    : []
 
   return (
-    <main className="flex flex-col items-center gap-8 px-6 py-10 flex-1">
+    <main className="relative flex flex-col items-center gap-8 px-6 py-10 flex-1">
+      <TasteBackdrop seedKey={userId ?? 'guest'} signals={backdropSignals} />
+
       <h1 className="text-2xl font-semibold">Your Taste Profile</h1>
 
       <Suspense fallback={null}>
