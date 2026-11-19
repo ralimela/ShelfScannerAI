@@ -17,19 +17,7 @@ export default function PaceSparkline({ sessions }: { sessions: PaceSession[] })
   const [hoverIndex, setHoverIndex] = useState<number | null>(null)
 
   const chronological = sessions.slice().reverse()
-
-  if (chronological.length === 1) {
-    const only = chronological[0]
-    return (
-      <div className="flex items-center justify-between rounded-lg border border-border px-3 py-2">
-        <div>
-          <p className="text-xs text-muted-foreground">First reading session logged</p>
-          <p className="text-sm text-foreground font-medium">{formatDate(only.startedAt)}</p>
-        </div>
-        <span className="text-lg font-semibold text-brand">{Math.round(only.pagesPerHour)}</span>
-      </div>
-    )
-  }
+  if (chronological.length < 2) return null
 
   const rates = chronological.map((s) => s.pagesPerHour)
   const min = Math.min(...rates)

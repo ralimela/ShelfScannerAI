@@ -51,7 +51,7 @@ export function mulberry32(seed: number) {
   }
 }
 
-function hueForGenre(genre: string, fallback: number): number {
+export function hueForGenre(genre: string, fallback: number): number {
   const lower = genre.toLowerCase()
   for (const key of Object.keys(GENRE_HUES)) {
     if (lower.includes(key)) return GENRE_HUES[key]
