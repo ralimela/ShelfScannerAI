@@ -1,11 +1,12 @@
 import type { HTMLAttributes } from 'react'
 
-export type PillVariant = 'default' | 'brand' | 'accent'
+export type PillVariant = 'default' | 'brand' | 'accent' | 'danger'
 
 const VARIANTS: Record<PillVariant, string> = {
   default: 'border border-border text-muted-foreground',
   brand: 'bg-brand/10 text-brand border border-brand/20',
   accent: 'bg-accent/10 text-accent border border-accent/20',
+  danger: 'bg-danger/10 text-danger border border-danger/20',
 }
 
 interface PillProps extends HTMLAttributes<HTMLSpanElement> {

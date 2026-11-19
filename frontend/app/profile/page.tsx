@@ -3,16 +3,18 @@
 import Link from 'next/link'
 import { useSearchParams } from 'next/navigation'
 import { Suspense, useCallback, useEffect, useState } from 'react'
+import { BookMarked, BookOpen, Gauge, ListChecks, ShieldAlert, Users } from 'lucide-react'
 import FeedbackForm from '@/components/FeedbackForm'
 import OnboardingForm from '@/components/OnboardingForm'
+import PaceSparkline from '@/components/PaceSparkline'
 import PaceTimer from '@/components/PaceTimer'
+import TagSection from '@/components/TagSection'
 import Button from '@/components/ui/Button'
 import Card from '@/components/ui/Card'
-import Pill from '@/components/ui/Pill'
 import { getUserProfile } from '@/lib/api'
 import { useAuth } from '@/lib/AuthContext'
 import { getOrCreateUserId } from '@/lib/user'
-import type { PaceSession, UserProfileResponse } from '@/lib/types'
+import type { UserProfileResponse } from '@/lib/types'
 
 function isNewUser(profile: UserProfileResponse): boolean {
   const { tasteProfile, totalBooksRead } = profile
@@ -25,23 +27,29 @@ function isNewUser(profile: UserProfileResponse): boolean {
   )
 }
 
-function PaceChart({ sessions }: { sessions: PaceSession[] }) {
-  const chronological = sessions.slice().reverse()
-  const maxRate = Math.max(...chronological.map((s) => s.pagesPerHour), 1)
+function readingTagline(profile: UserProfileResponse): string | null {
+  const topGenre = profile.tasteProfile.favoriteGenres[0]
+  const topAuthor = profile.tasteProfile.favoriteAuthors[0]
+  if (topGenre && topAuthor) return `${topGenre} reader, drawn to ${topAuthor}`
+  if (topGenre) return `${topGenre} reader`
+  if (topAuthor) return `Reads a lot of ${topAuthor}`
+  return null
+}
 
+function StatTile({
+  icon: Icon,
+  value,
+  label,
+}: {
+  icon: typeof BookOpen
+  value: string | number
+  label: string
+}) {
   return (
-    <div className="flex flex-col gap-1">
-      <p className="text-xs text-muted-foreground">Recent pace (pages/hour)</p>
-      <div className="flex items-end gap-1 h-16">
-        {chronological.map((session, i) => (
-          <div
-            key={`${session.startedAt}-${i}`}
-            title={`${session.pagesPerHour} pages/hour`}
-            className="flex-1 bg-brand/70 rounded-t-sm min-h-1"
-            style={{ height: `${Math.max((session.pagesPerHour / maxRate) * 100, 6)}%` }}
-          />
-        ))}
-      </div>
+    <div className="flex-1 flex flex-col gap-1 rounded-lg border border-border px-3 py-2.5 min-w-0">
+      <Icon className="w-4 h-4 text-brand" />
+      <span className="text-xl font-semibold leading-none truncate">{value}</span>
+      <span className="text-xs text-muted-foreground">{label}</span>
     </div>
   )
 }
@@ -91,6 +99,9 @@ export default function ProfilePage() {
     loadProfile(id, null)
   }, [user, idToken, loadProfile])
 
+  const tagline = profile ? readingTagline(profile) : null
+  const avatarLetter = (user?.email ?? '?').charAt(0).toUpperCase()
+
   return (
     <main className="flex flex-col items-center gap-8 px-6 py-10 flex-1">
       <h1 className="text-2xl font-semibold">Your Taste Profile</h1>
@@ -114,56 +125,38 @@ export default function ProfilePage() {
 
       {profile && (
         <div className="w-full max-w-md flex flex-col gap-6">
-          <Card className="flex flex-col gap-4">
-            <div className="flex gap-4">
-              <div className="flex-1 flex flex-col">
-                <span className="text-2xl font-semibold">{profile.totalBooksRead}</span>
-                <span className="text-xs text-muted-foreground">books read</span>
-              </div>
-              <div className="flex-1 flex flex-col">
-                <span className="text-2xl font-semibold">{profile.readingPace.avgPagesPerHour}</span>
-                <span className="text-xs text-muted-foreground">pages/hour avg</span>
-              </div>
-              <div className="flex-1 flex flex-col">
-                <span className="text-2xl font-semibold">{profile.readingPace.totalSessions}</span>
-                <span className="text-xs text-muted-foreground">pace sessions</span>
+          <Card className="relative overflow-hidden flex flex-col gap-4">
+            <div className="absolute inset-x-0 top-0 h-1 bg-gradient-to-r from-brand to-accent" />
+
+            <div className="flex items-center gap-3">
+              <span className="w-10 h-10 shrink-0 rounded-full bg-brand/15 text-brand font-semibold flex items-center justify-center">
+                {avatarLetter}
+              </span>
+              <div className="min-w-0">
+                <p className="font-medium">Reading Profile</p>
+                <p className="text-xs text-muted-foreground truncate">
+                  {tagline ?? 'Log a book or two to start building your profile'}
+                </p>
               </div>
             </div>
 
-            {profile.recentPaceSessions.length > 0 && <PaceChart sessions={profile.recentPaceSessions} />}
+            <div className="flex gap-3">
+              <StatTile icon={BookOpen} value={profile.totalBooksRead} label="books read" />
+              <StatTile icon={Gauge} value={profile.readingPace.avgPagesPerHour} label="pages/hr avg" />
+              <StatTile icon={ListChecks} value={profile.readingPace.totalSessions} label="pace sessions" />
+            </div>
 
-            {profile.tasteProfile.favoriteAuthors.length > 0 && (
-              <div className="flex flex-col gap-1">
-                <p className="text-xs text-muted-foreground">Favorite Authors</p>
-                <div className="flex flex-wrap gap-2">
-                  {profile.tasteProfile.favoriteAuthors.map((author) => (
-                    <Pill key={author}>{author}</Pill>
-                  ))}
-                </div>
-              </div>
-            )}
+            {profile.recentPaceSessions.length > 0 && <PaceSparkline sessions={profile.recentPaceSessions} />}
 
-            {profile.tasteProfile.writingStylePrefs.length > 0 && (
-              <div className="flex flex-col gap-1">
-                <p className="text-xs text-muted-foreground">Writing Style Preferences</p>
-                <div className="flex flex-wrap gap-2">
-                  {profile.tasteProfile.writingStylePrefs.map((pref) => (
-                    <Pill key={pref}>{pref}</Pill>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {profile.tasteProfile.avoidThemes.length > 0 && (
-              <div className="flex flex-col gap-1">
-                <p className="text-xs text-muted-foreground">Themes to Avoid</p>
-                <div className="flex flex-wrap gap-2">
-                  {profile.tasteProfile.avoidThemes.map((theme) => (
-                    <Pill key={theme}>{theme}</Pill>
-                  ))}
-                </div>
-              </div>
-            )}
+            <TagSection icon={BookMarked} title="Favorite Genres" items={profile.tasteProfile.favoriteGenres} variant="brand" />
+            <TagSection icon={Users} title="Favorite Authors" items={profile.tasteProfile.favoriteAuthors} variant="accent" />
+            <TagSection
+              icon={Gauge}
+              title="Writing Style & Themes"
+              items={profile.tasteProfile.writingStylePrefs}
+              variant="default"
+            />
+            <TagSection icon={ShieldAlert} title="Themes to Avoid" items={profile.tasteProfile.avoidThemes} variant="danger" />
 
             {profile.totalBooksRead === 0 && (
               <p className="text-sm text-muted-foreground">
