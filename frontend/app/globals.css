@@ -11,6 +11,9 @@
   --accent: #b45309;
   --accent-foreground: #ffffff;
   --danger: #b91c1c;
+  --paper: #fbf7ee;
+  --paper-line: rgb(80 70 55 / 0.14);
+  --glyph-lightness: 40%;
 }
 
 @theme inline {
@@ -41,6 +44,9 @@
     --accent: #fbbf24;
     --accent-foreground: #1c1203;
     --danger: #f87171;
+    --paper: #ebe4d6;
+    --paper-line: rgb(60 50 35 / 0.16);
+    --glyph-lightness: 75%;
   }
 }
 
@@ -48,4 +54,127 @@ body {
   background: var(--background);
   color: var(--foreground);
   font-family: var(--font-sans), ui-sans-serif, system-ui, sans-serif;
+}
+
+/* ---------- Reading scene: background glow + floating letters ---------- */
+
+.glow-blob {
+  filter: blur(70px);
+  animation: glow-drift 22s ease-in-out infinite;
+}
+
+@keyframes glow-drift {
+  0%, 100% { transform: translate(-50%, -50%) scale(1); }
+  50% { transform: translate(calc(-50% + 50px), calc(-50% - 40px)) scale(1.15); }
+}
+
+.floating-glyph {
+  opacity: 0;
+  animation: glyph-float linear infinite;
+}
+
+@keyframes glyph-float {
+  0% { transform: translate(0, 10vh) rotate(0deg); opacity: 0; }
+  10% { opacity: 1; }
+  85% { opacity: 1; }
+  100% { transform: translate(var(--sway), -110vh) rotate(35deg); opacity: 0; }
+}
+
+/* ---------- Reading scene: the open book ---------- */
+
+.book-perspective {
+  perspective: 1100px;
+}
+
+.book {
+  position: relative;
+  width: 17rem;
+  height: 10.5rem;
+  transform-style: preserve-3d;
+  transform: rotateX(34deg);
+}
+
+.book-cover {
+  position: absolute;
+  inset: -0.45rem -0.6rem;
+  border-radius: 0.5rem;
+  transform: translateZ(-2px);
+  box-shadow: 0 18px 28px -12px rgb(0 0 0 / 0.55);
+}
+
+.book-page {
+  position: absolute;
+  top: 0;
+  width: 50%;
+  height: 100%;
+  padding: 1rem 0.9rem;
+}
+
+.book-page-left {
+  left: 0;
+  border-radius: 4px 0 0 4px;
+  background:
+    linear-gradient(to left, rgb(0 0 0 / 0.22), transparent 22%) border-box,
+    repeating-linear-gradient(to bottom, transparent 0 10px, var(--paper-line) 10px 11px) content-box,
+    linear-gradient(var(--paper), var(--paper)) border-box;
+}
+
+.book-page-right {
+  left: 50%;
+  border-radius: 0 4px 4px 0;
+  background:
+    linear-gradient(to right, rgb(0 0 0 / 0.22), transparent 22%) border-box,
+    repeating-linear-gradient(to bottom, transparent 0 10px, var(--paper-line) 10px 11px) content-box,
+    linear-gradient(var(--paper), var(--paper)) border-box;
+}
+
+.book-page-flip {
+  transform-origin: left center;
+  animation: page-flip ease-in-out infinite;
+  backface-visibility: visible;
+}
+
+/* A page lying flat on either side looks identical to the base page beneath
+   it, so snapping from -180deg back to 0deg at the loop boundary is invisible. */
+@keyframes page-flip {
+  0% { transform: rotateY(0deg); filter: brightness(1); }
+  6% { transform: rotateY(-10deg); filter: brightness(0.97); }
+  18% { filter: brightness(0.8); }
+  32% { transform: rotateY(-180deg); filter: brightness(1); }
+  100% { transform: rotateY(-180deg); filter: brightness(1); }
+}
+
+.book-spine {
+  position: absolute;
+  left: 50%;
+  top: 0;
+  width: 2px;
+  height: 100%;
+  transform: translateX(-50%) translateZ(1px);
+  background: linear-gradient(rgb(0 0 0 / 0.25), rgb(0 0 0 / 0.4));
+}
+
+/* ---------- Reading scene: words rising off the pages ---------- */
+
+.scene-word {
+  opacity: 0;
+  animation: word-rise ease-out infinite;
+}
+
+@keyframes word-rise {
+  0% { transform: translate(calc(-50% + var(--offset)), 0) scale(0.85); opacity: 0; }
+  12% { opacity: 1; }
+  70% { opacity: 0.8; }
+  100% { transform: translate(calc(-50% + var(--offset) + var(--drift)), -9rem) scale(1.05); opacity: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .motion-scene,
+  .motion-scene * {
+    animation: none !important;
+  }
+  .scene-word,
+  .floating-glyph {
+    display: none;
+  }
 }

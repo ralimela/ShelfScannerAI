@@ -8,6 +8,7 @@ import FeedbackForm from '@/components/FeedbackForm'
 import OnboardingForm from '@/components/OnboardingForm'
 import PaceSparkline from '@/components/PaceSparkline'
 import PaceTimer from '@/components/PaceTimer'
+import ReadingScene from '@/components/ReadingScene'
 import TagSection from '@/components/TagSection'
 import TasteBackdrop from '@/components/TasteBackdrop'
 import Button from '@/components/ui/Button'
@@ -105,13 +106,17 @@ export default function ProfilePage() {
   const backdropSignals = profile
     ? [...profile.tasteProfile.favoriteGenres, ...profile.tasteProfile.favoriteAuthors]
     : []
+  const sceneWords = profile ? [...backdropSignals, ...profile.tasteProfile.writingStylePrefs] : []
+  const seedKey = userId ?? 'guest'
 
   return (
-    <main className="flex flex-col items-center gap-8 px-6 py-10 flex-1">
-      <div className="relative w-full flex flex-col items-center gap-6 pb-4">
-        <TasteBackdrop seedKey={userId ?? 'guest'} signals={backdropSignals} />
+    <main className="flex flex-col items-center gap-8 px-6 pb-10 flex-1">
+      <TasteBackdrop seedKey={seedKey} signals={backdropSignals} />
 
-        <h1 className="text-2xl font-semibold">Your Taste Profile</h1>
+      <div className="w-full flex flex-col items-center gap-6 pb-4">
+        <ReadingScene seedKey={seedKey} signals={backdropSignals} words={sceneWords} />
+
+        <h1 className="text-2xl font-semibold -mt-12">Your Taste Profile</h1>
 
         <Suspense fallback={null}>
           <ClaimBanner />

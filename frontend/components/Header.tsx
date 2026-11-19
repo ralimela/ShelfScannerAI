@@ -55,7 +55,7 @@ export default function Header() {
   }
 
   return (
-    <header className="border-b border-border">
+    <header className="border-b border-border bg-background/85 backdrop-blur-md">
       <div className="max-w-5xl mx-auto flex items-center justify-between px-4 sm:px-6 py-4">
         <Link
           href="/"
