@@ -100,10 +100,10 @@ export default function ProfilePage() {
       </Suspense>
 
       {!user && (
-        <Card className="w-full max-w-md flex items-center justify-between gap-3">
+        <Card className="w-full max-w-md flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <p className="text-sm text-muted-foreground">Sign up to save this across devices.</p>
-          <Link href="/login">
-            <Button type="button" size="sm">
+          <Link href="/login" className="shrink-0">
+            <Button type="button" size="sm" className="w-full sm:w-auto">
               Sign up
             </Button>
           </Link>
