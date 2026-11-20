@@ -121,7 +121,7 @@ export interface Recommendation {
   author: string | null
   pageCount: number | null
   reasoning: string
-  matchScore: number
+  matchScore: number | null
   matchedSignals: string[]
   similarTo: SimilarToMatch | null
   estimatedHours: number | null
@@ -146,6 +146,7 @@ export interface ChatResponse {
   reply: string
   picks: Recommendation[]
   mode: 'established' | 'cold_start'
+  hasTasteSignal: boolean
   processingTimeMs: number
 }
 

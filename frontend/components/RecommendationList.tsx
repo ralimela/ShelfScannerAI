@@ -17,9 +17,11 @@ function RecommendationCard({ recommendation }: { recommendation: Recommendation
           </p>
           {recommendation.author && <p className="text-sm text-muted-foreground">{recommendation.author}</p>}
         </div>
-        <Pill variant="brand" className="shrink-0">
-          {Math.round(recommendation.matchScore * 100)}% match
-        </Pill>
+        {recommendation.matchScore != null && (
+          <Pill variant="brand" className="shrink-0">
+            {Math.round(recommendation.matchScore * 100)}% match
+          </Pill>
+        )}
       </div>
 
       {recommendation.similarTo && (

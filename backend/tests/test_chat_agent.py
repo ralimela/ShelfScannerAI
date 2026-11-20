@@ -102,6 +102,50 @@ def test_evaluate_book_drops_self_match_and_flags_already_read(recommend_app, mo
     assert result["estimatedHours"] == 8.9
 
 
+def test_blank_reader_gets_no_score_instead_of_a_misleading_one(recommend_app, monkeypatch):
+    monkeypatch.setattr(recommend_app, "_reading_history", lambda user_id: [])
+    monkeypatch.setattr(
+        recommend_app,
+        "_lookup_open_library",
+        lambda title, author=None: {"title": "Dune", "author": "Frank Herbert", "pageCount": 605, "genres": [], "found": True},
+    )
+
+    def fail_embed(text):
+        raise AssertionError("no similarity should be computed without a taste signal")
+
+    monkeypatch.setattr(recommend_app, "_embed_text", fail_embed)
+
+    ctx = recommend_app.ReaderContext("brand-new-guest")
+    assert ctx.has_taste_signal is False
+
+    result = recommend_app.evaluate_book(ctx, "Dune")
+    assert result["matchScore"] is None
+    assert result["similarTo"] is None
+    assert result["found"] is True
+
+    ctx.evaluated["dune"] = result
+    picks = recommend_app.build_picks([{"title": "Dune", "reasoning": "Epic."}], ctx.evaluated)
+    assert picks[0]["matchScore"] is None and picks[0]["similarTo"] is None
+
+
+def test_new_reader_guidance_suggests_the_right_next_step(recommend_app, monkeypatch):
+    monkeypatch.setattr(recommend_app, "_reading_history", lambda user_id: [])
+
+    guest_prompt = recommend_app.build_chat_system_prompt(recommend_app.ReaderContext("guest-1", authenticated=False))
+    assert "NEW READER" in guest_prompt
+    assert "create a free account" in guest_prompt
+
+    member_prompt = recommend_app.build_chat_system_prompt(recommend_app.ReaderContext("member-1", authenticated=True))
+    assert "NEW READER" in member_prompt
+    assert "create a free account" not in member_prompt
+    assert "set their preferences on the Profile page" in member_prompt
+
+    recommend_app.users_table.put_item(
+        Item={"userId": "with-prefs", "tasteProfile": {"favoriteGenres": ["Horror"]}, "totalBooksRead": 0}
+    )
+    assert "NEW READER" not in recommend_app.build_chat_system_prompt(recommend_app.ReaderContext("with-prefs"))
+
+
 def test_blend_keeps_stated_preferences_weighted_as_history_grows(recommend_app):
     history = [{"title": "Dreamcatcher", "author": "Stephen King", "distance": 0.2}]  # similarity 0.8
     preferences = [{"title": "Dracula", "author": "Bram Stoker", "distance": 0.6}]  # similarity 0.4
@@ -219,6 +263,8 @@ def test_chat_runs_tool_loop_and_returns_validated_picks(recommend_app, monkeypa
     assert body["reply"] == "Start with Dune."
     assert [p["title"] for p in body["picks"]] == ["Neuromancer", "Dune"]
     assert body["mode"] == "cold_start"
+    assert body["hasTasteSignal"] is False
+    assert "NEW READER" in bedrock.requests[0]["system"]
 
     tool_result_turn = bedrock.requests[1]["messages"][-1]
     assert tool_result_turn["role"] == "user"

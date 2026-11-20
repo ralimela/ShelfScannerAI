@@ -719,9 +719,10 @@ class ReaderContext:
     """Everything one chat request knows about the reader, loaded once and
     shared by every tool call in the turn."""
 
-    def __init__(self, user_id):
+    def __init__(self, user_id, authenticated=False):
         user = _get_or_create_user(user_id)
         self.user_id = user_id
+        self.authenticated = authenticated
         self.taste_profile = user.get("tasteProfile") or _default_taste_profile()
         raw_pace = user.get("readingPace") or {}
         self.avg_pages_per_hour = float(raw_pace.get("avgPagesPerHour") or 0)
@@ -730,6 +731,10 @@ class ReaderContext:
         self.history_keys = {_normalize_title(b["title"]) for b in self.history}
         self.established = bool(self.history)
         self.books_read = max(int(user.get("totalBooksRead") or 0), len(self.history))
+        # With no history and no stated preferences, similarity would only
+        # measure closeness to *some* catalog book - not this reader - so the
+        # agent gets no score at all rather than a misleading one.
+        self.has_taste_signal = self.established or _has_preferences(self.taste_profile)
         self.evaluated = {}
         self._proxy_work_keys = None
         self._proxy_loaded = False
@@ -778,11 +783,20 @@ def evaluate_book(ctx, requested_title, requested_author=None):
     disliked = {g.lower() for g in ctx.taste_profile.get("dislikedGenres") or []}
     disliked_genre = next((g for g in info["genres"] if g.lower() in disliked), None)
 
-    embedding_text = f"{info['title']} by {info['author'] or 'Unknown'}. Genres: {', '.join(info['genres'])}"
-    literal = _vector_literal(_embed_text(embedding_text))
-    signal = score_candidate(
-        ctx.user_id, literal, info["title"], ctx.established, ctx.proxy_work_keys(), ctx.books_read
-    )
+    if ctx.has_taste_signal:
+        embedding_text = f"{info['title']} by {info['author'] or 'Unknown'}. Genres: {', '.join(info['genres'])}"
+        literal = _vector_literal(_embed_text(embedding_text))
+        signal = score_candidate(
+            ctx.user_id, literal, info["title"], ctx.established, ctx.proxy_work_keys(), ctx.books_read
+        )
+    else:
+        signal = {
+            "matchScore": None,
+            "preferenceWeight": None,
+            "nearestFromHistory": [],
+            "nearestFromPreferences": [],
+            "similarTo": None,
+        }
 
     page_count = info["pageCount"]
     return {
@@ -951,13 +965,36 @@ def build_chat_system_prompt(ctx):
         if ctx.avg_pages_per_hour
         else "No reading-pace data yet, so estimatedHours will be null."
     )
-    return (
+    prompt = (
         CHAT_SYSTEM_PROMPT
         + "\nREADER PROFILE\n"
         + f"Taste profile: {json.dumps(ctx.taste_profile, default=str)}\n"
         + f"Reading pace: {pace_block}\n"
         + history_block
     )
+    if not ctx.has_taste_signal:
+        prompt += "\n\n" + build_new_reader_guidance(ctx.authenticated)
+    return prompt
+
+
+def build_new_reader_guidance(authenticated):
+    next_step = (
+        "set their preferences on the Profile page"
+        if authenticated
+        else "create a free account and set their preferences on the Profile page"
+    )
+    return f"""NEW READER - NO TASTE DATA YET
+This reader has no finished books and no stated preferences, so tools return
+matchScore: null and no similar books. Ignore everything above about grounding
+in their profile; there is nothing to ground in. Never imply a personal match.
+- If their message gives taste context (books or authors they loved, a mood, a
+  genre, what they're in the mood for), use it: give a confident suggestion and
+  explain how each book connects to what they told you.
+- If it gives no context, still give a short, useful answer based on the books
+  themselves (tone, length, what kind of reader each suits), then ask one quick
+  question, like a book they've really loved lately.
+- End the reply with one friendly, non-pushy sentence suggesting they {next_step}
+  so future suggestions are matched to their taste."""
 
 
 def _invoke_claude_with_tools(system_prompt, messages):
@@ -977,12 +1014,12 @@ def _invoke_claude_with_tools(system_prompt, messages):
 
 
 def _handle_chat(event, body, start):
-    user_id, _authenticated = _resolve_user_id(event, body.get("userId"))
+    user_id, authenticated = _resolve_user_id(event, body.get("userId"))
     messages = sanitize_chat_messages(body.get("messages"))
     if not user_id or not messages:
         return _error(400, "userId and a messages list ending with a user message are required")
 
-    ctx = ReaderContext(user_id)
+    ctx = ReaderContext(user_id, authenticated)
     system_prompt = build_chat_system_prompt(ctx)
     conversation = [dict(m) for m in messages]
 
@@ -1025,6 +1062,7 @@ def _handle_chat(event, body, start):
                 "reply": parsed["reply"],
                 "picks": build_picks(parsed.get("picks"), ctx.evaluated),
                 "mode": "established" if ctx.established else "cold_start",
+                "hasTasteSignal": ctx.has_taste_signal,
                 "processingTimeMs": _elapsed_ms(start),
             }
         ),

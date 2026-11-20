@@ -1,8 +1,10 @@
 'use client'
 
+import Link from 'next/link'
 import { useEffect, useRef, useState } from 'react'
-import { ArrowUp, BookOpenText, RotateCcw } from 'lucide-react'
+import { ArrowUp, BookOpenText, RotateCcw, Sparkles } from 'lucide-react'
 import RecommendationList from '@/components/RecommendationList'
+import { buttonClasses } from '@/components/ui/Button'
 import TasteBackdrop from '@/components/TasteBackdrop'
 import { chatWithAgent } from '@/lib/api'
 import { useAuth } from '@/lib/AuthContext'
@@ -11,6 +13,32 @@ import type { ChatMessage, Recommendation } from '@/lib/types'
 
 interface ThreadMessage extends ChatMessage {
   picks?: Recommendation[]
+  hasTasteSignal?: boolean
+}
+
+function PersonalizeNudge({ signedIn }: { signedIn: boolean }) {
+  return (
+    <div className="flex flex-col gap-3 rounded-card border border-brand/25 bg-brand/5 p-4 backdrop-blur-md sm:flex-row sm:items-center">
+      <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-brand/15">
+        <Sparkles className="h-4 w-4 text-brand" />
+      </span>
+      <p className="flex-1 text-sm text-foreground/85">
+        {signedIn
+          ? 'These picks aren’t personalized yet. Add a few favorite genres and authors to get matches scored against your taste.'
+          : 'These picks aren’t personalized yet. Create a free account and set your preferences to get matches scored against your taste.'}
+      </p>
+      <div className="flex shrink-0 gap-2">
+        {!signedIn && (
+          <Link href="/login" className={buttonClasses('primary', 'sm')}>
+            Create account
+          </Link>
+        )}
+        <Link href="/profile" className={buttonClasses(signedIn ? 'primary' : 'outline', 'sm')}>
+          Set preferences
+        </Link>
+      </div>
+    </div>
+  )
 }
 
 const STORAGE_KEY = 'shelfscannerai_chat'
@@ -95,7 +123,15 @@ export default function AskPage() {
     setError(null)
     try {
       const response = await chatWithAgent(userId, toApiMessages(nextThread), idToken)
-      const withReply = [...nextThread, { role: 'assistant' as const, content: response.reply, picks: response.picks }]
+      const withReply = [
+        ...nextThread,
+        {
+          role: 'assistant' as const,
+          content: response.reply,
+          picks: response.picks,
+          hasTasteSignal: response.hasTasteSignal,
+        },
+      ]
       setThread(withReply)
       saveThread(withReply)
     } catch (err) {
@@ -120,6 +156,7 @@ export default function AskPage() {
   }
 
   const isEmpty = thread.length === 0
+  const lastAssistantIndex = thread.findLastIndex((m) => m.role === 'assistant')
 
   return (
     <main className="flex flex-1 flex-col items-center px-6">
@@ -169,6 +206,7 @@ export default function AskPage() {
                 <div className="flex min-w-0 flex-1 flex-col gap-4">
                   <p className="whitespace-pre-line leading-relaxed text-foreground/90">{message.content}</p>
                   {message.picks && message.picks.length > 0 && <RecommendationList recommendations={message.picks} />}
+                  {message.hasTasteSignal === false && i === lastAssistantIndex && <PersonalizeNudge signedIn={Boolean(user)} />}
                 </div>
               </div>
             )

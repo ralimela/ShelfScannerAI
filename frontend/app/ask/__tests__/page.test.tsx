@@ -34,7 +34,7 @@ const pick = {
 
 describe('AskPage', () => {
   it('sends the typed message and shows the reply with its picks', async () => {
-    mockedChat.mockResolvedValue({ reply: 'Start with Pet Sematary.', picks: [pick], mode: 'cold_start', processingTimeMs: 900 })
+    mockedChat.mockResolvedValue({ reply: 'Start with Pet Sematary.', picks: [pick], mode: 'cold_start', hasTasteSignal: true, processingTimeMs: 900 })
     render(<AskPage />)
 
     const input = screen.getByLabelText('Message the reading companion')
@@ -49,8 +49,8 @@ describe('AskPage', () => {
 
   it('carries earlier picks into the next request so follow-ups have context', async () => {
     mockedChat
-      .mockResolvedValueOnce({ reply: 'Pet Sematary.', picks: [pick], mode: 'cold_start', processingTimeMs: 900 })
-      .mockResolvedValueOnce({ reply: 'It is about 374 pages.', picks: [], mode: 'cold_start', processingTimeMs: 700 })
+      .mockResolvedValueOnce({ reply: 'Pet Sematary.', picks: [pick], mode: 'cold_start', hasTasteSignal: true, processingTimeMs: 900 })
+      .mockResolvedValueOnce({ reply: 'It is about 374 pages.', picks: [], mode: 'cold_start', hasTasteSignal: true, processingTimeMs: 700 })
     render(<AskPage />)
 
     fireEvent.click(screen.getByText('Something creepy but under 300 pages'))
@@ -66,11 +66,31 @@ describe('AskPage', () => {
     expect(followUpMessages[2]).toEqual({ role: 'user', content: 'How long is it?' })
   })
 
+  it('nudges a reader with no taste data to sign up and hides the fake match score', async () => {
+    mockedChat.mockResolvedValue({
+      reply: 'Try Pride and Prejudice first.',
+      picks: [{ ...pick, title: 'Pride and Prejudice', matchScore: null, similarTo: null }],
+      mode: 'cold_start',
+      hasTasteSignal: false,
+      processingTimeMs: 800,
+    })
+    render(<AskPage />)
+
+    fireEvent.click(screen.getByText('Dune or Project Hail Mary for a long weekend?'))
+    await screen.findByText('Try Pride and Prejudice first.')
+
+    expect(screen.queryByText(/% match/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/Similar to/)).not.toBeInTheDocument()
+    expect(screen.getByText('Create account')).toHaveAttribute('href', '/login')
+    expect(screen.getByText('Set preferences')).toHaveAttribute('href', '/profile')
+  })
+
   it('offers a retry when the agent call fails', async () => {
     mockedChat.mockRejectedValueOnce(new Error('Gateway timeout')).mockResolvedValueOnce({
       reply: 'Recovered.',
       picks: [],
       mode: 'cold_start',
+      hasTasteSignal: true,
       processingTimeMs: 500,
     })
     render(<AskPage />)
