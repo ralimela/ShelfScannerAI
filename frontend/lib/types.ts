@@ -136,6 +136,18 @@ export interface RecommendResponse {
   processingTimeMs: number
 }
 
+export interface ChatMessage {
+  role: 'user' | 'assistant'
+  content: string
+}
+
+export interface ChatResponse {
+  reply: string
+  picks: Recommendation[]
+  mode: 'established' | 'cold_start'
+  processingTimeMs: number
+}
+
 export interface OnboardingRequest {
   favoriteAuthors?: string[]
   favoriteGenres?: string[]

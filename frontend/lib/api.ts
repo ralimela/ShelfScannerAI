@@ -1,4 +1,6 @@
 import type {
+  ChatMessage,
+  ChatResponse,
   ClaimResult,
   FeedbackRequest,
   FeedbackResponse,
@@ -70,6 +72,16 @@ export async function getRecommendations(
   const path = idToken ? '/me/recommend' : '/recommend'
   const res = await apiFetch(path, idToken, { method: 'POST', body: JSON.stringify(payload) })
   return parseOrThrow(res, 'Getting recommendations failed')
+}
+
+export async function chatWithAgent(
+  userId: string,
+  messages: ChatMessage[],
+  idToken: string | null = null
+): Promise<ChatResponse> {
+  const path = idToken ? '/me/chat' : '/chat'
+  const res = await apiFetch(path, idToken, { method: 'POST', body: JSON.stringify({ userId, messages }) })
+  return parseOrThrow(res, 'The reading companion could not answer right now')
 }
 
 export async function logPaceSession(

@@ -20,7 +20,8 @@ ShelfScannerAI does it in three steps:
 
 ## Features
 
-- **Photo to library.** OCR with Amazon Rekognition, cleaned up by an LLM that groups text fragments into real title and author pairs, then enriched with Open Library metadata.
+- **Photo to library.** Scan up to 3 photos at once. OCR with Amazon Rekognition, cleaned up by an LLM that groups text fragments into real title and author pairs, then enriched with Open Library metadata. Books caught in more than one photo are merged.
+- **Chat with your reading companion.** No photo? Type the books you're torn between ("Pet Sematary or Hill House?") or describe a mood ("something creepy under 300 pages"). Claude Sonnet uses tools to look each book up and score it against your history, then answers conversationally, with follow-up questions supported.
 - **Explainable recommendations.** Vector similarity against your own reading history (pgvector), ranked and explained by Claude on Amazon Bedrock.
 - **Works from day one.** New users get recommendations matched against a curated 445-book catalog, narrowed to their onboarding preferences.
 - **"Go with preference" or "Try something new."** Ask for the closest match to your taste, or deliberately for something outside it. Genres you've said you dislike are always filtered out.
@@ -74,7 +75,16 @@ All infrastructure is defined in one AWS SAM template ([backend/template.yaml](b
 4. **Retrieve.** Candidates are embedded with Titan v2 and compared with pgvector cosine distance against:
    - **Established users:** embeddings of books they've finished and reviewed.
    - **New users:** a 15-book subset of the curated catalog that matches their onboarding preferences.
-5. **Rank and explain.** Claude Sonnet receives the similarity signals plus the taste profile and writes the reasoning. Ordering, filtering and time estimates stay in Python. The model's output is checked against the candidates that were actually sent, results are sorted by match score in code, and `estimatedHours` (page count ÷ pages per hour) is computed in Python rather than by the model.
+5. **Rank and explain.** Claude Sonnet receives the similarity signals plus the taste profile and writes the reasoning.
+
+### How the chat agent works
+
+`POST /chat` runs a Claude Sonnet tool-use loop on the same Lambda as `/recommend`, so both share one matching engine. The model sees the reader's taste profile, pace, and finished books with ratings, and can call two tools:
+
+- **`evaluate_books`** looks up each named book on Open Library, embeds it, and scores it against the reader's history. It also flags books the reader has already read and genres they dislike.
+- **`search_catalog`** finds books matching an open-ended description in the catalog, then scores those the same way.
+
+Book lookups run in parallel. As with scans, the model never supplies numbers: only books a tool actually evaluated in that turn can appear as pick cards, and their match scores and reading times come from the tool results. The backend is stateless; the client sends recent turns, including which books were shown, so follow-ups like "which of those is shortest?" work. Ordering, filtering and time estimates stay in Python. The model's output is checked against the candidates that were actually sent, results are sorted by match score in code, and `estimatedHours` (page count ÷ pages per hour) is computed in Python rather than by the model.
 
 ## Engineering highlights
 
@@ -112,6 +122,7 @@ Every user-data route has a guest version (by `userId`) and a signed-in version 
 |---|---|---|---|
 | POST | `/upload` | — | Shelf photo → extracted, enriched titles |
 | POST | `/recommend` | `/me/recommend` | Ranked, explained recommendations |
+| POST | `/chat` | `/me/chat` | Conversational agent: compare named books or ask open-ended |
 | POST | `/feedback` | `/me/feedback` | Post-read feedback → taste profile update |
 | GET | `/user/{userId}/profile` | `/me/profile` | Taste profile, history, pace stats |
 | POST | `/user/{userId}/onboarding` | `/me/onboarding` | Seed preferences for new users |
@@ -124,7 +135,7 @@ Every user-data route has a guest version (by `userId`) and a signed-in version 
 backend/
   template.yaml          SAM template: all AWS infrastructure
   upload_handler/        OCR, LLM consolidation, Open Library enrichment
-  recommend_handler/     vector retrieval + Claude ranking
+  recommend_handler/     vector retrieval + Claude ranking, and the /chat tool-use agent
   feedback_handler/      feedback → taste signals → embeddings
   user_handler/          profile + onboarding
   pace_handler/          reading sessions → rolling pages/hour
@@ -133,7 +144,7 @@ backend/
   scripts/ingest_catalog.py   one-time load of the 445-book catalog
   tests/                 pytest + moto
 frontend/
-  app/                   routes: /, /scan, /profile, /login, /auth/callback
+  app/                   routes: /, /scan, /ask, /profile, /login, /auth/callback
   components/            UI, including ReadingScene / ReaderProfile
   lib/                   API client, Cognito auth, backdrop generation
 ```
@@ -191,4 +202,4 @@ aws rds stop-db-cluster --db-cluster-identifier <cluster-id>
 - Google sign-in (the frontend PKCE flow is built; it needs a Google OAuth client registered with Cognito)
 - Rate limiting on the guest routes
 - Scheduled auto-stop for the Aurora cluster
-- A conversational mode ("I've read too much romance, give me a thriller with great prose")
+- Streaming chat responses (API Gateway REST has a 29-second limit; a typical chat turn takes 8-12 seconds)

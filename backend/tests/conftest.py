@@ -109,6 +109,28 @@ def auth_app(aws_credentials, monkeypatch):
 
 
 @pytest.fixture
+def recommend_app(aws_credentials, monkeypatch):
+    monkeypatch.setenv("DYNAMODB_USERS_TABLE", "test-users")
+    monkeypatch.setenv("DYNAMODB_SCAN_SESSIONS_TABLE", "test-scan-sessions")
+    monkeypatch.setenv("BEDROCK_CLAUDE_MODEL_ID", "test-claude")
+    monkeypatch.setenv("BEDROCK_TITAN_EMBED_MODEL_ID", "test-titan")
+    monkeypatch.setenv("AURORA_CLUSTER_ARN", "arn:aws:rds:us-east-1:123456789012:cluster:test")
+    monkeypatch.setenv("AURORA_SECRET_ARN", "arn:aws:secretsmanager:us-east-1:123456789012:secret:test")
+    monkeypatch.setenv("AURORA_DATABASE_NAME", "test")
+
+    with mock_aws():
+        import boto3
+
+        boto3.resource("dynamodb", region_name="us-east-1").create_table(
+            TableName="test-users",
+            AttributeDefinitions=[{"AttributeName": "userId", "AttributeType": "S"}],
+            KeySchema=[{"AttributeName": "userId", "KeyType": "HASH"}],
+            BillingMode="PAY_PER_REQUEST",
+        )
+        yield load_handler_module("recommend_app_module", "recommend_handler")
+
+
+@pytest.fixture
 def user_app(aws_credentials, monkeypatch):
     monkeypatch.setenv("DYNAMODB_USERS_TABLE", "test-users")
     monkeypatch.setenv("DYNAMODB_HISTORY_TABLE", "test-history")

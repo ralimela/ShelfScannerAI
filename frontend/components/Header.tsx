@@ -10,6 +10,7 @@ import { useAuth } from '@/lib/AuthContext'
 const NAV_LINKS = [
   { href: '/', label: 'Home' },
   { href: '/scan', label: 'Scan' },
+  { href: '/ask', label: 'Ask' },
   { href: '/profile', label: 'Profile' },
 ]
 

@@ -511,6 +511,20 @@ Resources:
             RestApiId: !Ref ShelfScannerApi
             Auth:
               Authorizer: CognitoAuthorizer
+        PostChat:
+          Type: Api
+          Properties:
+            Path: /chat
+            Method: post
+            RestApiId: !Ref ShelfScannerApi
+        PostMeChat:
+          Type: Api
+          Properties:
+            Path: /me/chat
+            Method: post
+            RestApiId: !Ref ShelfScannerApi
+            Auth:
+              Authorizer: CognitoAuthorizer
 
   # ---------------------------------------------------------------------
   # Phase 4 - Reading pace tracking

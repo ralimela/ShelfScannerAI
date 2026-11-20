@@ -1,5 +1,6 @@
 'use client'
 
+import Link from 'next/link'
 import { useEffect, useState } from 'react'
 import ImageUploader from '@/components/ImageUploader'
 import RecommendationList from '@/components/RecommendationList'
@@ -8,6 +9,8 @@ import Card from '@/components/ui/Card'
 import Pill from '@/components/ui/Pill'
 import { getRecommendations, uploadShelfImage } from '@/lib/api'
 import { useAuth } from '@/lib/AuthContext'
+import { fileToCompressedBase64 } from '@/lib/imageUtils'
+import { mergeUploadResults } from '@/lib/scan'
 import { getOrCreateUserId } from '@/lib/user'
 import type { RecommendResponse, UploadResponse } from '@/lib/types'
 
@@ -18,6 +21,7 @@ export default function ScanPage() {
   const [isUploading, setIsUploading] = useState(false)
   const [result, setResult] = useState<UploadResponse | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [partialFailures, setPartialFailures] = useState(0)
   const [isRecommending, setIsRecommending] = useState(false)
   const [recommendations, setRecommendations] = useState<RecommendResponse | null>(null)
   const [recommendError, setRecommendError] = useState<string | null>(null)
@@ -30,21 +34,32 @@ export default function ScanPage() {
     setAnonymousUserId(getOrCreateUserId())
   }, [user])
 
-  const handleUpload = async (base64: string, contentType: string) => {
+  const handleScan = async (files: File[]) => {
     if (!userId) return
     setIsUploading(true)
     setError(null)
+    setPartialFailures(0)
     setResult(null)
     setRecommendations(null)
     setRecommendError(null)
-    try {
-      const response = await uploadShelfImage(userId, base64, contentType)
-      setResult(response)
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Upload failed')
-    } finally {
-      setIsUploading(false)
+
+    const outcomes = await Promise.allSettled(
+      files.map(async (file) => {
+        const { base64, contentType } = await fileToCompressedBase64(file)
+        return uploadShelfImage(userId, base64, contentType)
+      })
+    )
+    const succeeded = outcomes.flatMap((o) => (o.status === 'fulfilled' ? [o.value] : []))
+    const firstFailure = outcomes.find((o): o is PromiseRejectedResult => o.status === 'rejected')
+
+    if (succeeded.length === 0) {
+      const reason = firstFailure?.reason
+      setError(reason instanceof Error ? reason.message : 'Upload failed')
+    } else {
+      setResult(mergeUploadResults(succeeded))
+      setPartialFailures(files.length - succeeded.length)
     }
+    setIsUploading(false)
   }
 
   const handleGetRecommendations = async () => {
@@ -77,9 +92,17 @@ export default function ScanPage() {
 
   return (
     <main className="flex flex-col items-center gap-8 px-6 py-10 flex-1">
-      <h1 className="text-2xl font-semibold">Scan a Bookshelf</h1>
+      <div className="flex flex-col items-center gap-2 text-center">
+        <h1 className="font-serif text-4xl tracking-tight">Scan a Bookshelf</h1>
+        <p className="text-sm text-muted-foreground">
+          No photo handy?{' '}
+          <Link href="/ask" className="font-medium text-brand underline-offset-4 hover:underline">
+            Ask the reading companion instead
+          </Link>
+        </p>
+      </div>
 
-      <ImageUploader onUpload={handleUpload} isUploading={isUploading} />
+      <ImageUploader onScan={handleScan} isUploading={isUploading} />
 
       {error && <p className="text-danger">{error}</p>}
 
@@ -88,6 +111,12 @@ export default function ScanPage() {
           <p className="text-sm text-muted-foreground">
             {result.extractedTitles.length} title(s) found in {result.processingTimeMs}ms
           </p>
+          {partialFailures > 0 && (
+            <p className="text-sm text-danger">
+              {partialFailures} photo{partialFailures === 1 ? '' : 's'} couldn&apos;t be read, so these results come from
+              the rest.
+            </p>
+          )}
 
           {result.message && <p className="text-sm text-muted-foreground">{result.message}</p>}
 
