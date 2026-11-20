@@ -23,7 +23,7 @@ ShelfScannerAI does it in three steps:
 - **Photo to library.** Scan up to 3 photos at once. OCR with Amazon Rekognition, cleaned up by an LLM that groups text fragments into real title and author pairs, then enriched with Open Library metadata. Books caught in more than one photo are merged.
 - **Chat with your reading companion.** No photo? Type the books you're torn between ("Pet Sematary or Hill House?") or describe a mood ("something creepy under 300 pages"). Claude Sonnet uses tools to look each book up and score it against your history, then answers conversationally, with follow-up questions supported.
 - **Explainable recommendations.** Vector similarity against your own reading history (pgvector), ranked and explained by Claude on Amazon Bedrock.
-- **Works from day one.** New users get recommendations matched against a curated 445-book catalog, narrowed to their onboarding preferences.
+- **Works from day one.** New users get recommendations matched against a curated 445-book catalog, narrowed to their preferences. Those preferences stay editable on the profile page and keep counting alongside reading history.
 - **"Go with preference" or "Try something new."** Ask for the closest match to your taste, or deliberately for something outside it. Genres you've said you dislike are always filtered out.
 - **Taste that learns.** Write a sentence about a book you finished, and Claude extracts liked and disliked elements into your taste profile.
 - **Reading pace.** A session timer computes your pages per hour, and every recommendation shows an estimated time to finish.
@@ -72,9 +72,11 @@ All infrastructure is defined in one AWS SAM template ([backend/template.yaml](b
 1. **Upload.** The image goes to S3. Rekognition `DetectText` caps out at 100 words per call, so dense shelves are recursively split into overlapping slices until each slice fits under the cap.
 2. **Consolidate.** Raw OCR lines (titles mixed with author names, blurbs, publisher marks and ISBNs) go to Claude Haiku in one batch, which returns only real title and author pairs.
 3. **Enrich.** Each pair is looked up in Open Library for page count and genres.
-4. **Retrieve.** Candidates are embedded with Titan v2 and compared with pgvector cosine distance against:
-   - **Established users:** embeddings of books they've finished and reviewed.
-   - **New users:** a 15-book subset of the curated catalog that matches their onboarding preferences.
+4. **Retrieve.** Candidates are embedded with Titan v2 and compared with pgvector cosine distance against two signals:
+   - **Reading history:** embeddings of books the reader has finished and reviewed.
+   - **Stated preferences:** a 15-book subset of the curated catalog that best matches the preferences the reader set (editable any time).
+
+   The two are blended into one match score. Preferences dominate at first and share weight as history grows (weight = 2 / (2 + books read)), but never drop below 20%, so what a reader explicitly asked for keeps counting. A candidate never counts as similar to itself.
 5. **Rank and explain.** Claude Sonnet receives the similarity signals plus the taste profile and writes the reasoning.
 
 ### How the chat agent works

@@ -4,8 +4,8 @@ import Link from 'next/link'
 import { useSearchParams } from 'next/navigation'
 import { Suspense, useCallback, useEffect, useState } from 'react'
 import FeedbackForm from '@/components/FeedbackForm'
-import OnboardingForm from '@/components/OnboardingForm'
 import PaceTimer from '@/components/PaceTimer'
+import PreferencesEditor from '@/components/PreferencesEditor'
 import ReaderProfile from '@/components/ReaderProfile'
 import ReadingScene from '@/components/ReadingScene'
 import RecentBooks from '@/components/RecentBooks'
@@ -48,6 +48,7 @@ export default function ProfilePage() {
   const [anonymousUserId, setAnonymousUserId] = useState<string | null>(null)
   const [profile, setProfile] = useState<UserProfileResponse | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [isEditingPreferences, setIsEditingPreferences] = useState(false)
 
   const userId = user?.userId ?? anonymousUserId
 
@@ -106,7 +107,28 @@ export default function ProfilePage() {
 
         {error && <p className="text-danger">{error}</p>}
 
-        {profile && <ReaderProfile profile={profile} avatarLetter={avatarLetter} />}
+        {profile && (
+          <ReaderProfile
+            profile={profile}
+            avatarLetter={avatarLetter}
+            onEditPreferences={isNewUser(profile) ? undefined : () => setIsEditingPreferences((open) => !open)}
+          />
+        )}
+
+        {profile && userId && (isNewUser(profile) || isEditingPreferences) && (
+          <PreferencesEditor
+            key={profile.tasteProfile.lastUpdated}
+            userId={userId}
+            idToken={idToken}
+            initial={profile.tasteProfile}
+            variant={isNewUser(profile) ? 'onboarding' : 'edit'}
+            onSaved={() => {
+              setIsEditingPreferences(false)
+              loadProfile(userId, idToken)
+            }}
+            onCancel={isNewUser(profile) ? undefined : () => setIsEditingPreferences(false)}
+          />
+        )}
       </div>
 
       {profile && (
@@ -115,10 +137,6 @@ export default function ProfilePage() {
             <Card>
               <PaceTimer userId={userId} idToken={idToken} onLogged={() => loadProfile(userId, idToken)} />
             </Card>
-          )}
-
-          {userId && isNewUser(profile) && (
-            <OnboardingForm userId={userId} idToken={idToken} onSubmitted={() => loadProfile(userId, idToken)} />
           )}
 
           {profile.recentBooks.length > 0 && <RecentBooks books={profile.recentBooks} />}

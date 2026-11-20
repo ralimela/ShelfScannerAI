@@ -168,7 +168,9 @@ export default function ScanPage() {
           <p className="text-sm text-muted-foreground">
             {recommendations.mode === 'cold_start'
               ? 'No reading history yet — matched against a curated catalog using your stated preferences.'
-              : 'Matched against your own reading history.'}
+              : recommendations.blendedWithPreferences
+                ? 'Matched against your reading history and the preferences you set.'
+                : 'Matched against your own reading history.'}
             {recommendations.explorationMode === 'novelty' && ' Showing something outside your usual taste.'}
           </p>
           <RecommendationList recommendations={recommendations.recommendations} />

@@ -36,10 +36,15 @@ CORS_HEADERS = {
 
 NEAREST_MATCH_LIMIT = 3
 PROXY_SUBSET_SIZE = 15
+# Stated preferences start out dominant and share weight with reading history
+# as it grows: weight = K / (K + books read), never below the floor, so what a
+# reader explicitly told us keeps counting no matter how much they've logged.
+PREFERENCE_PRIOR_WEIGHT = 2
+PREFERENCE_WEIGHT_FLOOR = 0.2
 
 MODE_INSTRUCTIONS = {
-    "preference": "The reader wants books closest to their established taste. Prioritize candidates with the LOWEST distance to their similarity signal.",
-    "novelty": "The reader explicitly wants to try something OUTSIDE their usual taste today. Prioritize candidates with the HIGHEST distance to their similarity signal - a genuine stretch, not their usual pick. Still never recommend anything touching their avoid-themes below. Justify why it's a worthwhile stretch, not merely different.",
+    "preference": "The reader wants books closest to their established taste. Prioritize candidates with the HIGHEST matchScore.",
+    "novelty": "The reader explicitly wants to try something OUTSIDE their usual taste today. Prioritize candidates with the LOWEST matchScore - a genuine stretch, not their usual pick. Still never recommend anything touching their avoid-themes below. Justify why it's a worthwhile stretch, not merely different.",
 }
 
 # Adapted from ShelfScannerAI_Handoff.md section 8, "Prompt 1 — Recommendation Agent"
@@ -49,9 +54,13 @@ author writing styles, narrative structures, and reader psychology.
 
 Your job is to analyze a list of available books against a reader's personal
 taste profile and recommend the best matches with clear, specific reasoning.
-Each available book comes with a similarity signal: the nearest book(s) to it
-from either the reader's own reading history, or - for a reader with no
-history yet - a curated catalog standing in for their stated preferences.
+Each available book comes with two similarity signals:
+- nearestFromHistory: the closest books the reader has actually finished
+- nearestFromPreferences: the closest books from a curated catalog chosen to
+  match the preferences the reader stated
+These are blended into matchScore; preferenceWeight (0-1) says how much the
+stated preferences count for this reader right now. Respect both: a reader's
+explicitly stated tastes matter even after they've logged books.
 
 RULES:
 - Always explain WHY a book matches based on the specific similarity signal provided
@@ -79,10 +88,14 @@ OUTPUT FORMAT:
 
 
 def build_recommendation_prompt(candidates_with_signals, taste_profile, mode, constraints, exploration_mode, reading_pace):
-    history_label = "own reading history" if mode == "established" else "stated preferences, via a curated catalog standing in for history"
+    history_note = (
+        "The reader has finished books, so nearestFromHistory is populated."
+        if mode == "established"
+        else "The reader hasn't logged any books yet, so only nearestFromPreferences is populated."
+    )
     return f"""
-AVAILABLE BOOKS (extracted from bookshelf photo), each with a similarity signal
-from the reader's {history_label}:
+AVAILABLE BOOKS (extracted from bookshelf photo), each with similarity signals.
+{history_note}
 {json.dumps(candidates_with_signals, indent=2)}
 
 USER TASTE PROFILE:
@@ -103,8 +116,8 @@ READING INTENT FOR THIS REQUEST:
 Themes to avoid, regardless of intent: {json.dumps(taste_profile.get("avoidThemes", []))}
 
 Rank the available books for this reader. For each book, write reasoning that
-references the specific similar book(s) listed in its signal and/or the taste
-profile - not generic praise. Only include books you can make a strong case
+references the specific similar book(s) in its signals and/or the stated
+preferences in the taste profile - not generic praise. Only include books you can make a strong case
 for. Skip poor matches entirely.
 """
 
@@ -324,6 +337,66 @@ def _nearest_catalog_matches(embedding_literal, work_keys=None, limit=NEAREST_MA
     return _nearest_matches(sql, parameters)
 
 
+def _normalize_title(title):
+    return re.sub(r"[^a-z0-9]", "", (title or "").lower())
+
+
+def _without_self(matches, title):
+    """A book already in the history or catalog being searched is always its
+    own nearest neighbor - that's not a similarity signal, so drop it."""
+    key = _normalize_title(title)
+    return [m for m in matches if _normalize_title(m["title"]) != key][:NEAREST_MATCH_LIMIT]
+
+
+def blend_signals(history_matches, preference_matches, books_read):
+    history_best = history_matches[0] if history_matches else None
+    preference_best = preference_matches[0] if preference_matches else None
+
+    if history_best and preference_best:
+        weight = max(PREFERENCE_WEIGHT_FLOOR, PREFERENCE_PRIOR_WEIGHT / (PREFERENCE_PRIOR_WEIGHT + max(books_read, 1)))
+    elif preference_best:
+        weight = 1.0
+    else:
+        weight = 0.0
+
+    history_part = (1 - weight) * (1 - history_best["distance"]) if history_best else 0
+    preference_part = weight * (1 - preference_best["distance"]) if preference_best else 0
+    if history_best and preference_best:
+        similar_to = history_best if history_part >= preference_part else preference_best
+    else:
+        similar_to = history_best or preference_best
+
+    return {
+        "matchScore": round(max(0, history_part + preference_part), 2),
+        "preferenceWeight": round(weight, 2),
+        "similarTo": similar_to,
+    }
+
+
+def score_candidate(user_id, embedding_literal, title, established, proxy_work_keys, books_read):
+    history_matches = (
+        _without_self(_nearest_history_matches(user_id, embedding_literal, limit=NEAREST_MATCH_LIMIT + 1), title)
+        if established
+        else []
+    )
+    # Cold-start readers with no stated preferences fall back to the whole
+    # catalog; established readers without preferences use history alone.
+    use_preferences = proxy_work_keys is not None or not established
+    preference_matches = (
+        _without_self(
+            _nearest_catalog_matches(embedding_literal, work_keys=proxy_work_keys, limit=NEAREST_MATCH_LIMIT + 1),
+            title,
+        )
+        if use_preferences
+        else []
+    )
+    return {
+        "nearestFromHistory": history_matches,
+        "nearestFromPreferences": preference_matches,
+        **blend_signals(history_matches, preference_matches, books_read),
+    }
+
+
 def lambda_handler(event, context):
     start = time.monotonic()
 
@@ -362,7 +435,8 @@ def _handle_recommend(event, body, start):
         "totalSessions": int(raw_reading_pace.get("totalSessions") or 0),
     }
 
-    established = _count_user_embeddings(user_id) > 0
+    books_read = _count_user_embeddings(user_id)
+    established = books_read > 0
     mode = "established" if established else "cold_start"
 
     filtered_candidates = _filter_disliked_genres(candidates, taste_profile.get("dislikedGenres"))
@@ -390,6 +464,7 @@ def _handle_recommend(event, body, start):
                     "mode": mode,
                     "explorationMode": exploration_mode,
                     "recommendations": [],
+                    "blendedWithPreferences": False,
                     "tasteProfileUsed": taste_profile,
                     "processingTimeMs": processing_time_ms,
                 }
@@ -397,13 +472,13 @@ def _handle_recommend(event, body, start):
         }
 
     proxy_work_keys = None
-    if not established and _has_preferences(taste_profile):
+    if _has_preferences(taste_profile):
         preference_embedding = _embed_text(_preference_text(taste_profile))
         preference_literal = "[" + ",".join(str(v) for v in preference_embedding) + "]"
         proxy_work_keys = _catalog_proxy_work_keys(preference_literal)
 
     candidates_with_signals = []
-    matches_by_title = {}
+    signals_by_title = {}
     for candidate in filtered_candidates:
         title = candidate.get("title")
         if not title:
@@ -415,12 +490,8 @@ def _handle_recommend(event, body, start):
         embedding = _embed_text(embedding_text)
         embedding_literal = "[" + ",".join(str(v) for v in embedding) + "]"
 
-        matches = (
-            _nearest_history_matches(user_id, embedding_literal)
-            if established
-            else _nearest_catalog_matches(embedding_literal, work_keys=proxy_work_keys)
-        )
-        matches_by_title[title.lower()] = matches
+        signal = score_candidate(user_id, embedding_literal, title, established, proxy_work_keys, books_read)
+        signals_by_title[title.lower()] = signal
 
         page_count = candidate.get("pageCount")
         estimated_hours = round(page_count / avg_pages_per_hour, 1) if page_count and avg_pages_per_hour else None
@@ -431,18 +502,15 @@ def _handle_recommend(event, body, start):
                 "author": author,
                 "pageCount": page_count,
                 "genres": genres,
-                "nearestMatches": matches,
+                "matchScore": signal["matchScore"],
+                "preferenceWeight": signal["preferenceWeight"],
+                "nearestFromHistory": signal["nearestFromHistory"],
+                "nearestFromPreferences": signal["nearestFromPreferences"],
                 "estimatedHours": estimated_hours,
             }
         )
 
-    def _sort_key(c):
-        matches = matches_by_title.get(c["title"].lower())
-        if not matches:
-            return float("inf")
-        return matches[0]["distance"]
-
-    candidates_with_signals.sort(key=_sort_key, reverse=(exploration_mode == "novelty"))
+    candidates_with_signals.sort(key=lambda c: c["matchScore"], reverse=(exploration_mode == "preference"))
 
     prompt = build_recommendation_prompt(candidates_with_signals, taste_profile, mode, constraints, exploration_mode, reading_pace)
     claude_output = _invoke_claude(RECOMMENDATION_SYSTEM_PROMPT, prompt)
@@ -455,19 +523,16 @@ def _handle_recommend(event, body, start):
         if not candidate:
             continue  # drop anything Claude hallucinated that wasn't in the scanned candidates
 
-        matches = matches_by_title.get(rec_title.lower(), [])
-        similar_to = matches[0] if matches else None
-        match_score = round(max(0, 1 - matches[0]["distance"]), 2) if matches else 0
-
+        signal = signals_by_title[rec_title.lower()]
         recommendations.append(
             {
                 "title": candidate["title"],
                 "author": candidate["author"],
                 "pageCount": candidate["pageCount"],
                 "reasoning": rec.get("reasoning", ""),
-                "matchScore": match_score,
+                "matchScore": signal["matchScore"],
                 "matchedSignals": rec.get("matchedSignals", []),
-                "similarTo": similar_to,
+                "similarTo": signal["similarTo"],
                 "estimatedHours": candidate.get("estimatedHours"),
             }
         )
@@ -508,6 +573,7 @@ def _handle_recommend(event, body, start):
                 "mode": mode,
                 "explorationMode": exploration_mode,
                 "recommendations": recommendations,
+                "blendedWithPreferences": established and proxy_work_keys is not None,
                 "tasteProfileUsed": taste_profile,
                 "processingTimeMs": processing_time_ms,
             }
@@ -541,10 +607,12 @@ CHAT_TOOLS = [
         "description": (
             "Evaluate specific books against this reader. Use whenever the reader names books they're "
             "considering, or you want to check particular titles. For each book returns: canonical title "
-            "and author, pageCount, genres, matchScore (0-1 similarity to the reader's own finished books, "
-            "or to their stated preferences if they have no history yet), nearestMatches (the closest books "
-            "from that history), estimatedHours at their reading pace, alreadyRead, dislikedGenre (set if it "
-            "falls in a genre they dislike), and found (false if no matching book could be looked up)."
+            "and author, pageCount, genres, matchScore (0-1, blending similarity to the reader's finished "
+            "books with similarity to their stated preferences; preferenceWeight says how much the "
+            "preferences count), nearestFromHistory and nearestFromPreferences (the closest books behind "
+            "each signal), similarTo (the single most relevant one), estimatedHours at their reading pace, "
+            "alreadyRead, dislikedGenre (set if it falls in a genre they dislike), and found (false if no "
+            "matching book could be looked up)."
         ),
         "input_schema": {
             "type": "object",
@@ -590,7 +658,9 @@ sometimes asking something open-ended.
 
 You know this reader through the profile below. Ground every recommendation in it:
 reference specific books they've finished and how they rated them, their favorite
-authors, and the styles they're drawn to. Never give generic praise.
+genres and authors, and the styles they're drawn to. The preferences they stated
+themselves matter as much as what they've read - never drop them just because they've
+logged a few books. Never give generic praise.
 
 TOOLS
 - evaluate_books: call it whenever the reader names books, even one. Never judge a named
@@ -617,10 +687,6 @@ Your final message must be ONLY a JSON object - no preamble, no code fences:
   (e.g. ones that miss a stated constraint), and use [] when asking a question or when
   nothing fits.
 """
-
-
-def _normalize_title(title):
-    return re.sub(r"[^a-z0-9]", "", (title or "").lower())
 
 
 def _reading_history(user_id):
@@ -663,6 +729,7 @@ class ReaderContext:
         self.history = _reading_history(user_id)
         self.history_keys = {_normalize_title(b["title"]) for b in self.history}
         self.established = bool(self.history)
+        self.books_read = max(int(user.get("totalBooksRead") or 0), len(self.history))
         self.evaluated = {}
         self._proxy_work_keys = None
         self._proxy_loaded = False
@@ -670,7 +737,7 @@ class ReaderContext:
     def proxy_work_keys(self):
         if not self._proxy_loaded:
             self._proxy_loaded = True
-            if not self.established and _has_preferences(self.taste_profile):
+            if _has_preferences(self.taste_profile):
                 embedding = _embed_text(_preference_text(self.taste_profile))
                 self._proxy_work_keys = _catalog_proxy_work_keys(_vector_literal(embedding))
         return self._proxy_work_keys
@@ -708,19 +775,14 @@ def _lookup_open_library(title, author=None):
 
 def evaluate_book(ctx, requested_title, requested_author=None):
     info = _lookup_open_library(requested_title, requested_author)
-    key = _normalize_title(info["title"])
     disliked = {g.lower() for g in ctx.taste_profile.get("dislikedGenres") or []}
     disliked_genre = next((g for g in info["genres"] if g.lower() in disliked), None)
 
     embedding_text = f"{info['title']} by {info['author'] or 'Unknown'}. Genres: {', '.join(info['genres'])}"
     literal = _vector_literal(_embed_text(embedding_text))
-    if ctx.established:
-        matches = _nearest_history_matches(ctx.user_id, literal, limit=NEAREST_MATCH_LIMIT + 1)
-    else:
-        matches = _nearest_catalog_matches(literal, work_keys=ctx.proxy_work_keys(), limit=NEAREST_MATCH_LIMIT + 1)
-    # A book is always its own nearest neighbor if it's already in the history
-    # or catalog being searched - that's not a similarity signal, so drop it.
-    matches = [m for m in matches if _normalize_title(m["title"]) != key][:NEAREST_MATCH_LIMIT]
+    signal = score_candidate(
+        ctx.user_id, literal, info["title"], ctx.established, ctx.proxy_work_keys(), ctx.books_read
+    )
 
     page_count = info["pageCount"]
     return {
@@ -730,12 +792,15 @@ def evaluate_book(ctx, requested_title, requested_author=None):
         "found": info["found"],
         "pageCount": page_count,
         "genres": info["genres"],
-        "matchScore": round(max(0, 1 - matches[0]["distance"]), 2) if matches else 0,
-        "nearestMatches": matches,
+        "matchScore": signal["matchScore"],
+        "preferenceWeight": signal["preferenceWeight"],
+        "nearestFromHistory": signal["nearestFromHistory"],
+        "nearestFromPreferences": signal["nearestFromPreferences"],
+        "similarTo": signal["similarTo"],
         "estimatedHours": round(page_count / ctx.avg_pages_per_hour, 1)
         if page_count and ctx.avg_pages_per_hour
         else None,
-        "alreadyRead": key in ctx.history_keys,
+        "alreadyRead": _normalize_title(info["title"]) in ctx.history_keys,
         "dislikedGenre": disliked_genre,
     }
 
@@ -858,7 +923,7 @@ def build_picks(raw_picks, evaluated):
                 "reasoning": str(pick.get("reasoning") or ""),
                 "matchScore": evaluation["matchScore"],
                 "matchedSignals": [s for s in signals if isinstance(s, str)][:4],
-                "similarTo": evaluation["nearestMatches"][0] if evaluation["nearestMatches"] else None,
+                "similarTo": evaluation["similarTo"],
                 "estimatedHours": evaluation["estimatedHours"],
             }
         )
@@ -878,8 +943,8 @@ def build_chat_system_prompt(ctx):
         history_block = f"Books they've finished (highest rated first):\n{history_lines}"
     else:
         history_block = (
-            "They haven't logged any finished books yet, so matchScore compares against their "
-            "stated preferences via a curated catalog instead of their history."
+            "They haven't logged any finished books yet, so matchScore comes entirely from their "
+            "stated preferences (via a curated catalog chosen to match them)."
         )
     pace_block = (
         f"{round(ctx.avg_pages_per_hour)} pages/hour over {ctx.total_sessions} timed sessions"

@@ -125,11 +125,29 @@ def _recent_pace_sessions(user_id, limit=10):
     return sessions
 
 
+MAX_PREFERENCE_ITEMS = 40
+MAX_PREFERENCE_LENGTH = 120
+
+
+def _clean_preference_list(values):
+    cleaned, seen = [], set()
+    for value in values:
+        if not isinstance(value, str):
+            continue
+        text = " ".join(value.split())[:MAX_PREFERENCE_LENGTH]
+        if text and text.lower() not in seen:
+            seen.add(text.lower())
+            cleaned.append(text)
+    return cleaned[:MAX_PREFERENCE_ITEMS]
+
+
 def _apply_onboarding(existing_profile, body):
+    """Full-replace semantics per field, so the same endpoint serves both
+    first-time onboarding and later edits (the client sends the edited list)."""
     profile = dict(existing_profile or _default_taste_profile())
     for field in ONBOARDING_LIST_FIELDS:
         if isinstance(body.get(field), list):
-            profile[field] = body[field]
+            profile[field] = _clean_preference_list(body[field])
     for field in ONBOARDING_SCALAR_FIELDS:
         if field in body:
             profile[field] = body[field]

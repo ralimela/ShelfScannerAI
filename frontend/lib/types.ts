@@ -132,6 +132,7 @@ export interface RecommendResponse {
   mode: 'established' | 'cold_start'
   explorationMode: 'preference' | 'novelty'
   recommendations: Recommendation[]
+  blendedWithPreferences?: boolean
   tasteProfileUsed: Partial<TasteProfile>
   processingTimeMs: number
 }

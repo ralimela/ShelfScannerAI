@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, type ReactNode } from 'react'
+import { Pencil } from 'lucide-react'
 import PaceSparkline from '@/components/PaceSparkline'
 import { hueForGenre } from '@/lib/backdrop'
 import type { UserProfileResponse } from '@/lib/types'
@@ -90,9 +91,10 @@ function InlineList({ items, limit = 5, struck = false }: { items: string[]; lim
 interface ReaderProfileProps {
   profile: UserProfileResponse
   avatarLetter: string
+  onEditPreferences?: () => void
 }
 
-export default function ReaderProfile({ profile, avatarLetter }: ReaderProfileProps) {
+export default function ReaderProfile({ profile, avatarLetter, onEditPreferences }: ReaderProfileProps) {
   const { tasteProfile, readingPace, totalBooksRead } = profile
   const genres = tasteProfile.favoriteGenres
 
@@ -105,8 +107,20 @@ export default function ReaderProfile({ profile, avatarLetter }: ReaderProfilePr
           <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-brand/15 font-serif text-xl text-brand ring-1 ring-brand/30">
             {avatarLetter}
           </span>
-          <div className="min-w-0">
-            <p className={EYEBROW}>Reader profile</p>
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center justify-between gap-3">
+              <p className={EYEBROW}>Reader profile</p>
+              {onEditPreferences && (
+                <button
+                  type="button"
+                  onClick={onEditPreferences}
+                  className="flex shrink-0 items-center gap-1.5 rounded-full border border-border px-3 py-1 text-xs font-medium text-muted-foreground transition-colors hover:border-brand/50 hover:text-foreground"
+                >
+                  <Pencil className="h-3 w-3" />
+                  Edit preferences
+                </button>
+              )}
+            </div>
             <h2 className="mt-1 font-serif text-[1.75rem] leading-[1.15] text-balance">{tagline(profile)}</h2>
           </div>
         </header>
