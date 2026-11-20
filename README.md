@@ -4,7 +4,7 @@
 
 ShelfScannerAI is a serverless AWS app that turns a photo of a bookshelf into personalized, explainable book recommendations. It reads the spines, figures out which books are actually there, and ranks them against *your* reading taste with plain-English reasons and an estimate of how long each one will take you to finish.
 
-**Live demo:** https://main.d3e1l3syrof2p7.amplifyapp.com
+**App demo:** https://www.youtube.com/watch?v=Oa7bpA5O-84
 
 ---
 
